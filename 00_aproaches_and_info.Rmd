@@ -1,0 +1,427 @@
+---
+title: "00_aproaches_and_info"
+author: "Adriana Ibáñez"
+date: "2025-11-17"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(knitr)
+library(openxlsx)
+```
+
+```{r}
+DB <- read.delim("RBS_HEALTHYAGING.txt", header = TRUE, stringsAsFactors = FALSE)
+
+# VISIT a factor
+DB$VISIT <- as.factor(DB$VISIT)
+
+# Convertir todo (excepto SUBJID y VISIT) a numérico
+DB <- DB %>%
+  mutate(across(-c(SUBJID, VISIT), ~as.numeric(as.character(.))))
+```
+
+
+```{r}
+db_filt <- DB %>%
+  select(-any_of(c( "YRSSMOKE", "CIGSPERDAY_NOW", "FLIGHTS_UP", "BLOCKS_WALK", "WALK", "WALK_TMS", "WALK_MIN", "JOG", "JOG_TMS", "JOG_MIN", "HIKE", "HIKE_TMS", "HIKE_MIN", "GARDEN", "GARDEN_TMS", "GARDEN_MIN", "AEROBIC", "AEROBIC_TMS", "AEROBIC_MIN", "OTH_DANCE", "OTH_DANCE_TMS", "OTH_DANCE_MIN", "CALISTHEN", "CALISTHEN_TMS", "CALISTHEN_MIN", "GOLF", "GOLF_TMS", "GOLF_MIN", "TENNIS", "TENNIS_TMS", "TENNIS_MIN", "BOWL", "BOWL_TMS", "BOWL_MIN", "BIKE", "BIKE_TMS", "BIKE_MIN", "SWIM", "SWIM_TMS", "SWIM_MIN", "HORSEBK", "HORSEBK_TMS", "HORSEBK_MIN", "HANDBALL", "HANDBALL_TMS", "HANDBALL_MIN", "OTH_EXER", "OTH_EXER1_TMS", "OTH_EXER1_MIN", "OTH_EXER2_TMS", "OTH_EXER2_MIN", "OTH_EXER3_TMS", "OTH_EXER3_MIN", "HOUSEWORK_HRS", "CARPENTRY_HRS", "CHILDCARE_HRS", "WAISTMIN_CM", "HIPILIAC_CM", "HIPTROCH_CM", "SBP1", "DBP1", "SOFT_MIDTH1", "SOFT_NAVEL", "SOFT_ILIAC", "BIO_RES", "FATMASS", "FATFREEMASS", "LEAN_FAT", "RATIO_LOWER", "RATIO_UPPER", "BODY20_TOT", "REST_ENERGY", "TARGETWT_LOWER", "TARGETWT_UPPER", "HD_AREA", "LRIB_AREA", "RRIB_AREA", "TSPI_AREA", "LSPI_AREA", "PELV_AREA", "SUBT_AREA", "HD_BMC", "LRIB_BMC", "RRIB_BMC", "SUBT_BMC", "HD_BMD", "LA_BMD", "RA_BMD", "LRIB_BMD", "RRIB_BMD", "TSPI_BMD", "LSPI_BMD", "PELV_BMD", "LL_BMD", "RL_BMD", "SUBT_BMD", "TOT_BMD", "HD_PCN", "DONE", "NOTDONE_REAS", "TOTALFAT_SEG", "LARMFAT_SEG", "RARMFAT_SEG", "RLEGFAT_SEG", "LLEGFAT_SEG", "TRUNKFAT_SEG", "TOTALMASS_SEG", "LARMMASS_SEG", "RARMMASS_SEG", "RLEGMASS_SEG", "LLEGMASS_SEG", "TRUNKMASS_SEG", "PHYSIQUE_SEG", "METAGE_SEG", "BODYWATER_SEG", "VISCERAL_SEG", "BONEMASS_SEG", "GHB_BRV", "RDW", "PLATELET", "MPV", "NEUTROPHILS", "LYMPHOCYTES", "MONOCYTES", "EOSINOPHILS", "BASOPHILS", "ABS_NEUTROPHILS", "ABS_LYMPHOCYTES", "ABS_MONOCYTES", "MEAT_HEI", "NUT_HEI", "SSB_HEI", "TVEG_HEI", "FRT_HEI", "PPOLY_HEI", "TRAN_HEI", "NETOH_HEI", "OMEG_HEI", "WG_HEI", "NA_HEI", "NAHEI", "ALCO", "MS", "VEG2000", "LEGU2000", "FRUIT2000", "NUT2000", "WGRAIN2000", "MEAT2000", "FISH2000", "MEDALCO", "MEDMS", "MEDVEG", "MEDLEGU", "MEDFRUIT", "MEDNUT", "MEDWGRAIN", "MEDMEAT", "MEDFISH", "MEDSCORE", "BL_TIME"
+)))
+```
+
+
+
+```{r}
+# ==================== VARIABLES QUE VAMOS A CONTAR ====================
+# Excluimos solo identificadores (SUBJID y VISIT). SEX lo dejamos porque está en el dataset
+# y tiene datos en el 100 % de los casos → no afecta al resultado
+vars_clinical <- setdiff(names(db_filt), c("SUBJID", "VISIT"))
+
+# ==================== TABLA RESUMEN POR VISITA ====================
+tabla_resumen <- db_filt %>%
+  group_by(VISIT) %>%
+  summarise(
+    Total_participants                  = n(),
+    Women                               = sum(SEX == "0", na.rm = TRUE),
+    Men                                 = sum(SEX == "1", na.rm = TRUE),
+    Variables_with_more_than_50perc_data = sum(
+      colSums(!is.na(select(cur_data(), all_of(vars_clinical)))) > 0.5 * n()
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    VISIT = as.numeric(as.character(VISIT)),
+    Women_percentage = round(100 * Women / Total_participants, 1)
+  ) %>%
+  arrange(VISIT) %>%
+  select(
+    Visit                      = VISIT,
+    Total_participants,
+    Women,
+    Women_percentage,
+    Men,
+    Variables_with_more_than_50perc_data
+  )
+
+# Table
+kable(tabla_resumen, caption = "Resumen de la cohorte por visita (datos crudos - antes de imputación)")
+
+print(tabla_resumen)
+```
+
+
+```{r}
+# Read the data (only the columns we need to save memory)
+DB <- read.delim("RBS_HEALTHYAGING.txt", header = TRUE, sep = "\t", stringsAsFactors = FALSE) %>%
+  select(SUBJID) %>%
+  distinct()   # keeps only unique IDs
+
+# Total number of different individuals
+n_unique_individuals <- nrow(DB)
+
+cat("Total number of unique individuals in the study:", n_unique_individuals, "\n")
+
+```
+
+### Sumatorio de personas por visitas realizadas
+
+```{r}
+visitas_por_sujeto <- db_filt %>%
+  group_by(SUBJID) %>%
+  summarise(n_visitas = n_distinct(VISIT)) %>%
+  arrange(desc(n_visitas))
+
+sum(visitas_por_sujeto$n_visitas == 7)
+sum(visitas_por_sujeto$n_visitas == 6)
+sum(visitas_por_sujeto$n_visitas == 5)
+sum(visitas_por_sujeto$n_visitas == 4)
+sum(visitas_por_sujeto$n_visitas == 3)
+sum(visitas_por_sujeto$n_visitas == 2)
+sum(visitas_por_sujeto$n_visitas == 1)
+```
+
+### Cuantos pacientes tienen todos los años?
+
+```{r}
+# Calcular número de columnas sin NA por SUBJID y VISIT
+completitud <- db_filt %>%
+  rowwise() %>%
+  mutate(n_param_completos = sum(!is.na(c_across(-c(SUBJID, VISIT))))) %>%
+  ungroup() %>%
+  select(SUBJID, VISIT, n_param_completos)
+
+resumen <- completitud %>%
+  group_by(n_param_completos) %>%
+  summarise(n_visitas = n()) %>%
+  arrange(desc(n_param_completos))
+```
+
+```{r}
+# Retrieve data columns (excluding SUBJID and VISIT)
+vars_datos <- setdiff(names(db_filt), c("SUBJID", "VISIT"))
+
+# Calculate per subject: available visits, number of visits, and number of completed measurements
+tabla_sujeto <- db_filt %>%
+  group_by(SUBJID) %>%
+  summarise(
+    visitas = paste(sort(unique(VISIT)), collapse = ", "),
+    n_visitas = n_distinct(VISIT),
+    medidas = sum(colSums(is.na(across(all_of(vars_datos)))) == 0)
+  )
+```
+
+```{r}
+tabla_filtrada <- tabla_sujeto %>%
+  filter(n_visitas > 1)
+
+# Group by number of visits
+resumen_visitas <- tabla_sujeto %>%
+  group_by(n_visitas) %>%
+  summarise(
+    n_sujetos = n()
+  )
+
+# Graph
+ggplot(resumen_visitas, aes(x = factor(n_visitas), y = n_sujetos)) +
+  geom_col(fill = "#4682B4") +
+  geom_text(aes(label = n_sujetos), 
+            vjust = -0.5, size = 4, fontface = "bold") +
+  labs(
+    title = "Sujetos por número de visitas (≥ 2)",
+    x = "Número de visitas",
+    y = "Cantidad de sujetos"
+  ) +
+  theme_minimal()
+
+```
+
+### Question: How many patients do they have each year? Which ones?
+There are 229 patients with all the measurements, then 285 with all but 1, ...
+```{r}
+table(tabla_filtrada$n_visitas)
+```
+## Distribution of data amount by measure and visit
+To see the volume of data we have per year and per variable:
+```{r}
+# Variables a analizar (excluimos SUBJID y VISIT)
+vars_datos <- setdiff(names(db_filt), c("SUBJID", "VISIT"))
+
+# Paso a long format y contabilizamos NAs
+data_long <- db_filt %>%
+  pivot_longer(cols = all_of(vars_datos), names_to = "variable", values_to = "valor") %>%
+  group_by(VISIT, variable) %>%
+  summarise(
+    n_disponibles = sum(!is.na(valor)),
+    .groups = "drop"
+  )
+```
+
+\newpage
+
+# Missing value management
+Preparing the datra for KNN.
+
+```{r}
+# See NA
+na_por_variable <- sapply(db_filt, function(x) sum(is.na(x)))
+na_por_variable <- sort(na_por_variable, decreasing = TRUE)
+
+na_df <- data.frame(
+  variable = names(na_por_variable),
+  n_NA = na_por_variable,
+  row.names = NULL
+)
+```
+
+There are some measures that we don't have every year (see Excel spreadsheets) and we would have to decide whether to keep them or not (TESTOSTERONE, ESTRADIOL, BIO_TESTOSTERONE, BIO_ESTRADIOL, INFLAMMATORY MARKERS, CRP, BONE MARKERS, PINP, NTX_SERUM, NTX_URINE_VITROS)
+
+```{r}
+sum(na_df$n_NA > 5000)
+```
+
+There are measurements for which more than half of the patients have no data. Using this code, by changing the number, we can see which measurements these are.
+```{r}
+na_df[na_df[[2]] > 5000, 1]
+```
+
+
+## Established groups. People with > 4 consecutive visits.
+
+Once we have this established, we decided to focus on subjects with at least four consecutive measurements over time, that is, approximately 35% of the patients (229+285+334+334)/3416. The goal is to find a time window that allows us to obtain the maximum number of measurements. Based on what we have seen in the previous graphs, this would generally be from visit 7 to 11.
+
+We should also change some data: remove data that's too specific, like the type of exercise, and keep only information on whether they exercise or not, whether they smoke or not, etc. Remove overly specific information and try to apply more general data. Therefore, I have to redo some graphs.
+
+
+#### *BEHAIVOURS*
+
+SMOKING: EVERSMOKE, HXSMOKE
+ALCOHOL: PASTALC, ALCFREQ
+EXERCISE: EX3XWK, REGEX, EX_COMP10YRS
+RELAX: SLEEPING_HRS, NAPPING_HRS, SITTING_HRS
+
+
+
+#### *PHYSICAL CHARACTERISTICS*
+
+PHYSICAL MEASURES: WT_LB, HT_IN, WAISTBEND_CM, HIPMAX_CM, SBP2, DBP2, PULSE_30, SOFT_MIDTH2, SOFT_NAVTABLE
+IMPEDANCE: FATPERC, FATFREEPERC, BODYH20_PERC
+HOLOGIC: LA_AREA, RA_AREA, LL_AREA, RL_AREA, TOT_AREA, LA_BMC, RA_BMC, TSPI_BMC, LSPI_BMC, PELV_BMC, LL_BMC, RL_BMC, TOT_BMC, TR_BMC, LA_FAT, RA_FAT, TR_FAT, LL_FAT, RL_FAT, SUBT_FAT, HD_FAT, TOT_FAT, LA_LEAN, RA_LEAN, TR_LEAN, LL_LEAN, RL_LEAN, SUBT_LEAN, HD_LEAN, TOT_LEAN, LA_LBMC, "RA_LBMC", "TR_LBMC", "LL_LBMC", "RL_LBMC", "SUBT_LBMC", "HD_LBMC", "TOT_LBMC", "LA_TOT", "RA_TOT", "TR_TOT", "LL_TOT", "RL_TOT", "SUBT_TOT", "HD_TOT", "TOT_TOT", "LA_PCN", "RA_PCN", "TR_PCN", "LL_PCN", "RL_PCN", "SUBT_PCN", "TOT_PCN"
+
+
+#### *LABORATORY MEASUREMENTS*
+
+FASTING: FASTHRS, BL_TIME
+GLUCOSE: GLUCOSE, GLUCOSE_CHALLENGE, INSULIN, INSULIN_CHALLENGE, CPEPTIDE, PROINSULIN, GHBHPLC
+CHEMISTRY: UREA_NITROGEN, CREATININE, TOT_PROTEIN, ALBUMIN, GLOBULIN, TOT_BILIRUBIN, GGT, SGOT, SGPT, LDH, ALK_PHOS, CALCIUM, URIC_ACID, SODIUM, POTASSIUM, CHLORIDE, CO2, INORG_PHOS, IRON, MAGNESIUM
+LIPIDS: CHOLESTERIOL, TRIGLYCERIDES, HDL, LDL
+BLOOD: HEMOGLOBIN, HEMATOCRIT, WHITECOUNT, REDCOUNT, MCV, MCH, MCHC
+URINE: URINE_ALBUMIN, URINE_CREATININE
+
+Anything other than these measures must be deleted because there are not enough or they are repetitive/redundant measures.
+
+## Graphs for visualization of quantity of completed data along the visits
+
+```{r}
+vars_smoking <- c("EVERSMOKE", "HXSMOKE")
+vars_alcohol <- c("PASTALC", "ALCFREQ")
+vars_exercise <- c("EX3XWK", "REGEX", "EX_COMP10YRS")
+vars_relax <- c("SLEEPING_HRS", "NAPPING_HRS", "SITTING_HRS")
+
+vars_comb_behaviours <- c(vars_relax, vars_alcohol, vars_exercise, vars_smoking)
+
+
+vars_physical <- c("WT_LB", "HT_IN", "WAISTBEND_CM", "HIPMAX_CM", "SBP2", "DBP2", "PULSE_30", "SOFT_MIDTH2", "SOFT_NAVTABLE")
+vars_impedance <- c("FATPERC", "FATFREEPERC", "BODYH20_PERC")
+vars_hologic <- c(
+  "LA_AREA", "RA_AREA", "LL_AREA", "RL_AREA", "TOT_AREA",
+  "LA_BMC", "RA_BMC", "TSPI_BMC", "LSPI_BMC", "PELV_BMC", "LL_BMC", "RL_BMC", "TOT_BMC", "TR_BMC",
+  "LA_FAT", "RA_FAT", "TR_FAT", "LL_FAT", "RL_FAT", "SUBT_FAT", "HD_FAT", "TOT_FAT",
+  "LA_LEAN", "RA_LEAN", "TR_LEAN", "LL_LEAN", "RL_LEAN", "SUBT_LEAN", "HD_LEAN", "TOT_LEAN",
+  "LA_LBMC", "RA_LBMC", "TR_LBMC", "LL_LBMC", "RL_LBMC", "SUBT_LBMC", "HD_LBMC", "TOT_LBMC",
+  "LA_TOT", "RA_TOT", "TR_TOT", "LL_TOT", "RL_TOT", "SUBT_TOT", "HD_TOT", "TOT_TOT",
+  "LA_PCN", "RA_PCN", "TR_PCN", "LL_PCN", "RL_PCN", "SUBT_PCN", "TOT_PCN"
+)
+
+vars_comb_phys <- c(vars_physical, vars_impedance, vars_hologic)
+
+vars_fasting <- c("FASTHRS", "BL_TIME")
+vars_glucose <- c("GLUCOSE", "GLUCOSE_CHALLENGE", "INSULIN", "INSULIN_CHALLENGE", "CPEPTIDE", "PROINSULIN", "GHBHPLC")
+vars_chemistry <- c("UREA_NITROGEN", "CREATININE", "TOT_PROTEIN", "ALBUMIN", "GLOBULIN", "TOT_BILIRUBIN", "GGT", "SGOT", "SGPT", "LDH", "ALK_PHOS", "CALCIUM", "URIC_ACID", "SODIUM", "POTASSIUM", "CHLORIDE", "CO2", "INORG_PHOS", "IRON", "MAGNESIUM")
+vars_lipids <- c("CHOLESTERIOL", "TRIGLYCERIDES", "HDL", "LDL")
+vars_blood <- c("HEMOGLOBIN", "HEMATOCRIT", "WHITECOUNT", "REDCOUNT", "MCV", "MCH", "MCHC")
+vars_urine <- c("URINE_ALBUMIN", "URINE_CREATININE")
+
+vars_comb_lab <- c(vars_fasting, vars_glucose, vars_chemistry, vars_lipids, vars_blood, vars_urine)
+```
+
+### Behaviour variables
+```{r}
+behaviours <- ggplot(filter(data_long, variable %in% vars_comb_behaviours), aes(x = as.factor(VISIT), y = variable)) +
+  geom_point(aes(size = n_disponibles), color = "purple", alpha = 0.7) +
+  scale_size_continuous(name = "Subjects with data") +
+  labs(
+    title = "Behaviours: smoking, alcohol, exercise, relax",
+    x = "Visit",
+    y = "Variable"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 6),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(filename = "output/Behaviours_data_along_timepoints.png", plot = behaviours, width = 10, height = 4, dpi = 300)
+
+```
+
+### Physical variables
+```{r}
+physical <- ggplot(filter(data_long, variable %in% vars_comb_phys), aes(x = as.factor(VISIT), y = variable)) +
+  geom_point(aes(size = n_disponibles), color = "red", alpha = 0.7) +
+  scale_size_continuous(name = "Subjects with data") +
+  labs(
+    title = "Physical measurements: physical, impedance, hologic",
+    x = "Visit",
+    y = "Variable"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 6),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(filename = "output/Physical measurements.png", plot = physical, width = 10, height = 12, dpi = 300)
+```
+
+### Laboratory variables
+```{r}
+Lab <- ggplot(filter(data_long, variable %in% vars_comb_lab), aes(x = as.factor(VISIT), y = variable)) +
+  geom_point(aes(size = n_disponibles), color = "orange", alpha = 0.7) +
+  scale_size_continuous(name = "Subjects with data") +
+  labs(
+    title = "Laboratory measurements: fasting, glucose, chemistry, lipids, urine, blood",
+    x = "Visit",
+    y = "Variable"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 6),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(filename = "output/Laboratory measurements.png", plot = Lab, width = 10, height = 8, dpi = 300)
+
+```
+
+
+There are 590 observations/individuals with data from visits 7-10.
+The idea now would be to filter for patients who have consecutive visits from visit 7 to 10.
+
+```{r}
+# Creation of a new table with patients with visits 7, 8, 9 and 10
+subjects_con_78910 <- tabla_filtrada %>%
+  filter(
+    str_detect(visitas, "\\b7\\b") &
+    str_detect(visitas, "\\b8\\b") &
+    str_detect(visitas, "\\b9\\b") &
+    str_detect(visitas, "\\b10\\b")
+  )
+
+length(subjects_con_78910$SUBJID)
+```
+
+```{r}
+# db_filt only has patients with data from visits 7 to 10
+db_filt <- db_filt %>%
+  filter(SUBJID %in% subjects_con_78910$SUBJID)
+
+db_filt <- db_filt %>%
+  filter(VISIT %in% c(7, 8, 9, 10))
+
+saveRDS(db_filt,"db_7_to_10.rds")
+```
+
+Now we generate different databases based on patient visits using the db_filt:
+```{r}
+db_visit7 <- db_filt %>% filter(VISIT == 7)
+db_visit8 <- db_filt %>% filter(VISIT == 8)
+db_visit9 <- db_filt %>% filter(VISIT == 9)
+db_visit10 <- db_filt %>% filter(VISIT == 10)
+
+saveRDS(db_visit7,"db_visit7.rds")
+saveRDS(db_visit8,"db_visit8.rds")
+saveRDS(db_visit9,"db_visit9.rds")
+saveRDS(db_visit10,"db_visit10.rds")
+```
+
+We now have 4 different dataframes with the measurements of each visit of each patient who attended visits 7 through 10.
+
+```{r}
+# Function: to compare NA per variable and add visit name
+na_summary <- function(df, visita) {
+  tibble(
+    variable = names(df),
+    na_count = sapply(df, function(x) sum(is.na(x))),
+    visit = visita
+  )
+}
+
+# Create individual table
+na7  <- na_summary(db_visit7,  "visit7")
+na8  <- na_summary(db_visit8,  "visit8")
+na9  <- na_summary(db_visit9,  "visit9")
+na10 <- na_summary(db_visit10, "visit10")
+
+# Join the tables
+na_combined <- bind_rows(na7, na8, na9, na10)
+
+# Wide format
+na_table <- na_combined %>%
+  pivot_wider(names_from = visit, values_from = na_count, values_fill = 0) %>%
+  arrange(desc(visit7))  # Sort by visit 7 first
+
+print(na_table)
+```
+
+```{r}
+heatmap_plot <- ggplot(na_combined, aes(x = visit, y = variable, fill = na_count)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "blue", high = "red", name = "NAs") +
+  labs(title = "Heatmap of NA values per variable and visit",
+       x = "Visit",
+       y = "Variable") +
+  theme_minimal() +
+  theme(
+    axis.text.y = element_text(size = 6),
+    axis.text.x = element_text(size = 10, face = "bold"),
+    legend.position = "right"
+  )
+
+print(heatmap_plot)
+ggsave("Figuras/heatmap_na_por_variable.png", plot = heatmap_plot, width = 10, height = 12, dpi = 300)
+ggsave("Figuras/heatmap_na_por_variable.pdf", plot = heatmap_plot, width = 10, height = 12, dpi = 300)
+
+```
+
+
+

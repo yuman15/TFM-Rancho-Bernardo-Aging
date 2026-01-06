@@ -1,0 +1,382 @@
+---
+title: "00b_NA_management_and_imputation"
+author: "Adriana Ibáñez"
+date: "2025-12-01"
+output: html_document
+---
+
+# *Summary*
+This script performs a detailed analysis of missing data (NA) in the _Rancho Bernardo_ dataset for visits 7 to 10. The idea is to handle missing values by first identifying variables with a high percentage of missing data (more than 60% NA), and delete them from the db.
+Finally, preparing the dataset for K-Nearest Neighbors (KNN) imputation separately for men and women datasets to have a final product with imputed values ( _db_final_female_ and _db_final_male_)
+
+
+````{r, echo = FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)    # Manipulación de datos
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(magrittr)      # Para usar %>%
+library(knitr)         # Para kable()
+library(FactoMineR)
+library(factoextra)
+library(VIM)
+library(openxlsx)
+library(missForest)
+library(VIM)    # Para KNN
+library(mice)   # Para PMM
+library(yaImpute) # Para NNI
+library(randomForest)
+library(kableExtra)
+library(class)
+library(caret)
+````
+
+
+
+### *PRE- ANALYSIS: VARIABLES WITH <50% DATA IN VISITS 7-10*
+Delete the variables that have more than 50% of NA in each dataset (men and women).
+
+
+```{r}
+db_visit7 <- readRDS("db_visit7.rds")
+db_visit8 <- readRDS("db_visit8.rds")
+db_visit9 <- readRDS("db_visit9.rds")
+db_visit10 <- readRDS("db_visit10.rds")
+
+db_filt <- readRDS("db_7_to_10.rds")
+```
+
+
+```{r}
+# Function: to compare NA per variable and add visit name
+na_summary <- function(df, visita) {
+  tibble(
+    variable = names(df),
+    na_count = sapply(df, function(x) sum(is.na(x))),
+    visit = visita
+  )
+}
+
+# Create individual table
+na7  <- na_summary(db_visit7,  "visit7")
+na8  <- na_summary(db_visit8,  "visit8")
+na9  <- na_summary(db_visit9,  "visit9")
+na10 <- na_summary(db_visit10, "visit10")
+
+# Join the tables
+na_combined <- bind_rows(na7, na8, na9, na10)
+
+# Wide format
+na_table <- na_combined %>%
+  pivot_wider(names_from = visit, values_from = na_count, values_fill = 0) %>%
+  arrange(desc(visit7))  # Sort by visit 7 first
+
+print(na_table)
+```
+
+
+#### General NA analysis
+```{r}
+# Calculate total N per visit (all subjects together)
+n_total_v7 <- nrow(db_visit7)
+n_total_v8 <- nrow(db_visit8) 
+n_total_v9 <- nrow(db_visit9)
+n_total_v10 <- nrow(db_visit10)
+
+# Añadir % disponibles a na_combined
+completitud_710 <- na_combined %>%
+  mutate(
+    n_total = case_when(
+      visit == "visit7" ~ n_total_v7,
+      visit == "visit8" ~ n_total_v8,
+      visit == "visit9" ~ n_total_v9,
+      visit == "visit10" ~ n_total_v10
+    ),
+    pct_disponibles = round((1 - na_count/n_total) * 100, 1)
+  ) %>%
+  select(variable, visit, n_total, na_count, pct_disponibles)
+
+# CALCULAR % NA EXACTO: suma(visit7+visit8+visit9+visit10) / (590 × 4)
+n_total_visitas <- 590 * 4  # 2360 observaciones totales esperadas
+
+completitud_exacta <- na_table %>%
+  mutate(
+    na_total = visit7 + visit8 + visit9 + visit10,  # Suma NA de las 4 visitas
+    datos_disponibles = n_total_visitas - na_total,  # Datos NO NA
+    pct_na = round((na_total / n_total_visitas) * 100, 1),
+    pct_disponibles = round((datos_disponibles / n_total_visitas) * 100, 1)
+  ) %>%
+  select(variable, na_total, datos_disponibles, pct_na, pct_disponibles) %>%
+  arrange(pct_disponibles)
+
+# VARIABLES CON <50% DATOS (CRITERIO CONSERVADOR)
+variables_bajas <- completitud_exacta %>%
+  filter(pct_na > 60) %>%
+  arrange(desc(pct_na))
+
+
+# EXPORTAR CSVs
+write.csv(completitud_exacta, "output/completitud_variables_7_10.csv", row.names = FALSE)
+write.csv(variables_bajas, "output/variables_menos_50pct_7_10.csv", row.names = FALSE)
+
+```
+
+### *Separation by men and women + individual KNN*
+
+First, we separate the dataset into men and women:
+```{r}
+db_female <- db_filt %>% filter(SEX == "0")
+db_male   <- db_filt %>% filter(SEX == "1")
+```
+
+```{r}
+mean(db_female$HT_IN)
+mean(db_male$HT_IN)
+```
+```{r}
+length(unique(db_female$SUBJID))
+length(unique(db_male$SUBJID))
+```
+
+
+
+### _NA to more than 50% in WOMEN_
+```{r}
+# Create na_table WOMEN
+na7_f <- na_summary(db_female %>% filter(VISIT == 7), "visit7")
+na8_f <- na_summary(db_female %>% filter(VISIT == 8), "visit8")
+na9_f <- na_summary(db_female %>% filter(VISIT == 9), "visit9")
+na10_f <- na_summary(db_female %>% filter(VISIT == 10), "visit10")
+
+na_combined_f <- bind_rows(na7_f, na8_f, na9_f, na10_f)
+na_table_f <- na_combined_f %>%
+  pivot_wider(names_from = visit, values_from = na_count, values_fill = 0)
+
+# Calculate total N per visit WOMEN
+n_total_v7_f <- nrow(db_female %>% filter(VISIT == 7))
+n_total_v8_f <- nrow(db_female %>% filter(VISIT == 8))
+n_total_v9_f <- nrow(db_female %>% filter(VISIT == 9))
+n_total_v10_f <- nrow(db_female %>% filter(VISIT == 10))
+
+# % available PER VISIT WOMEN
+completitud_710_f <- na_combined_f %>%
+  mutate(
+    n_total = case_when(
+      visit == "visit7" ~ n_total_v7_f,
+      visit == "visit8" ~ n_total_v8_f,
+      visit == "visit9" ~ n_total_v9_f,
+      visit == "visit10" ~ n_total_v10_f
+    ),
+    pct_disponibles = round((1 - na_count/n_total) * 100, 1)
+  ) %>%
+  select(variable, visit, n_total, na_count, pct_disponibles)
+
+# % EXACT NA WOMEN: sum NA / (368 × 4)
+n_total_visitas_f <- 368 * 4  # 1472 observations
+completitud_exacta_f <- na_table_f %>%
+  mutate(
+    na_total = visit7 + visit8 + visit9 + visit10,
+    datos_disponibles = n_total_visitas_f - na_total,
+    pct_na = round((na_total / n_total_visitas_f) * 100, 1),
+    pct_disponibles = round((datos_disponibles / n_total_visitas_f) * 100, 1)
+  ) %>%
+  select(variable, na_total, datos_disponibles, pct_na, pct_disponibles) %>%
+  arrange(pct_disponibles)
+
+# VARIABLES with >60% NA WOMEN
+variables_bajas_f <- completitud_exacta_f %>%
+  filter(pct_na > 60) %>%
+  arrange(desc(pct_na))
+
+
+completitud_exacta_f %>% 
+  filter(pct_na > 60) %>% 
+  pull(variable)
+
+# EXPORT
+write.csv(completitud_exacta_f, "output/completitud_female_7_10.csv", row.names = FALSE)
+write.csv(variables_bajas_f, "output/variables_mas_60pct_NA_female.csv", row.names = FALSE)
+```
+
+
+#### Delete this variables
+```{r}
+vars_f_high_na <- c("TESTOSTERONE", "ESTRADIOL", "BIO_TESTOSTERONE", "BIO_ESTRADIOL", 
+                     "ALBUMIN_DIPSTICK", "INSULIN_CHALLENGE", "GHBHPLC", "PROINSULIN", 
+                     "GLUCOSE_CHALLENGE", "REDCOUNT", "HEMOGLOBIN", "HEMATOCRIT", 
+                     "WHITECOUNT", "MCV", "MCH", "MCHC", "CPEPTIDE", "PINP", 
+                     "NTX_SERUM", "NTX_URINE_VITROS", "CRP", "GGT", "LDH", 
+                     "URIC_ACID")
+
+db_female <- db_female %>%
+  select(-all_of(vars_f_high_na))
+```
+
+
+### _NA more than 60% MEN_
+
+```{r}
+# Create na_table MEN 
+na7_m <- na_summary(db_male %>% filter(VISIT == 7), "visit7")
+na8_m <- na_summary(db_male %>% filter(VISIT == 8), "visit8")
+na9_m <- na_summary(db_male %>% filter(VISIT == 9), "visit9")
+na10_m <- na_summary(db_male %>% filter(VISIT == 10), "visit10")
+
+na_combined_m <- bind_rows(na7_m, na8_m, na9_m, na10_m)
+na_table_m <- na_combined_m %>%
+  pivot_wider(names_from = visit, values_from = na_count, values_fill = 0)
+
+# Calculate total N per visit MEN
+n_total_v7_m <- nrow(db_male %>% filter(VISIT == 7))
+n_total_v8_m <- nrow(db_male %>% filter(VISIT == 8))
+n_total_v9_m <- nrow(db_male %>% filter(VISIT == 9))
+n_total_v10_m <- nrow(db_male %>% filter(VISIT == 10))
+
+# % available PER VISIT MEN
+completitud_710_m <- na_combined_m %>%
+  mutate(
+    n_total = case_when(
+      visit == "visit7" ~ n_total_v7_m,
+      visit == "visit8" ~ n_total_v8_m,
+      visit == "visit9" ~ n_total_v9_m,
+      visit == "visit10" ~ n_total_v10_m
+    ),
+    pct_disponibles = round((1 - na_count/n_total) * 100, 1)
+  ) %>%
+  select(variable, visit, n_total, na_count, pct_disponibles)
+
+# % NA EXACT MEN: sum NA / (222 × 4)
+n_total_visitas_m <- 222 * 4  # 888 observations
+completitud_exacta_m <- na_table_m %>%
+  mutate(
+    na_total = visit7 + visit8 + visit9 + visit10,
+    datos_disponibles = n_total_visitas_m - na_total,
+    pct_na = round((na_total / n_total_visitas_m) * 100, 1),
+    pct_disponibles = round((datos_disponibles / n_total_visitas_m) * 100, 1)
+  ) %>%
+  select(variable, na_total, datos_disponibles, pct_na, pct_disponibles) %>%
+  arrange(pct_disponibles)
+
+# VARIABLES WITH >60% NA MEN
+variables_bajas_m <- completitud_exacta_m %>%
+  filter(pct_na > 60) %>%
+  arrange(desc(pct_na))
+
+
+completitud_exacta_m %>% 
+  filter(pct_na > 60) %>% 
+  pull(variable)
+
+
+# EXPORT
+write.csv(completitud_exacta_m, "output/completitud_male_7_10.csv", row.names = FALSE)
+write.csv(variables_bajas_m, "output/variables_mas_60pct_NA_male.csv", row.names = FALSE)
+```
+
+##### Delete this variables in MEN db
+```{r}
+vars_m_high_na <- c("ALBUMIN_DIPSTICK", "INSULIN_CHALLENGE", "BIO_ESTRADIOL", 
+                     "ESTRADIOL", "BIO_TESTOSTERONE", "TESTOSTERONE", "GHBHPLC", 
+                     "PROINSULIN", "GLUCOSE_CHALLENGE", "HEMOGLOBIN", "HEMATOCRIT", 
+                     "WHITECOUNT", "REDCOUNT", "MCV", "MCH", "MCHC", "CPEPTIDE", 
+                     "NTX_URINE_VITROS", "CRP", "PINP", "NTX_SERUM", "GGT", 
+                     "LDH", "URIC_ACID")
+
+db_male <- db_male %>%
+  select(-all_of(vars_m_high_na))
+
+```
+
+### *KNN performing*
+
+```{r}
+# Remove non-imputable variables
+db_knn_female <- db_female %>%
+  select(-DEATHAGE, -EVERSMOKE, -HXSMOKE, -PASTALC, -ALCFREQ, -EX3XWK, -REGEX, -EX_COMP10YRS, -SLEEPING_HRS, -NAPPING_HRS, -SITTING_HRS)
+
+db_knn_male <- db_male %>%
+  select(-DEATHAGE, -EVERSMOKE, -HXSMOKE, -PASTALC, -ALCFREQ, -EX3XWK, -REGEX, -EX_COMP10YRS, -SLEEPING_HRS, -NAPPING_HRS, -SITTING_HRS)
+```
+
+#### KNN preparation: remove SUBJID and VISIT, select numeric variables only
+```{r}
+# Women
+f_split <- db_knn_female %>%
+  select(-SUBJID, -VISIT) %>%
+  select(where(is.numeric))
+
+f_nonnum <- db_knn_female %>%
+  select(SUBJID, VISIT)  # Save IDs
+
+# Men
+m_split <- db_knn_male %>%
+  select(-SUBJID, -VISIT) %>%
+  select(where(is.numeric))
+
+m_nonnum <- db_knn_male %>%
+  select(SUBJID, VISIT)
+
+## Simple scaling before KNN (to avoid bias in distances)
+# Women: Calculate means and standard deviations ignoring NA
+f_means <- colMeans(f_split, na.rm = TRUE)
+f_sds <- apply(f_split, 2, sd, na.rm = TRUE)
+f_sds[f_sds == 0] <- 1  # Avoid division by zero if variable is constant
+
+f_scaled <- sweep(f_split, 2, f_means, "-")  # - average
+f_scaled <- sweep(f_scaled, 2, f_sds, "/")   # divide for sd
+```
+
+```{r}
+# Men
+m_means <- colMeans(m_split, na.rm = TRUE) ## Quizá cambiar por mediana?
+m_sds <- apply(m_split, 2, sd, na.rm = TRUE)
+m_sds[m_sds == 0] <- 1
+
+m_scaled <- sweep(m_split, 2, m_means, "-")
+m_scaled <- sweep(m_scaled, 2, m_sds, "/")
+
+## KNN en datos escalados
+f_knn_scaled <- kNN(f_scaled, k = 10) %>%
+  select(-ends_with("_imp"))
+
+m_knn_scaled <- kNN(m_scaled, k = 10) %>%
+  select(-ends_with("_imp"))
+
+## Desescalado simple
+f_knn <- sweep(f_knn_scaled, 2, f_sds, "*")  # Multiply for sd
+f_knn <- sweep(f_knn, 2, f_means, "+")      # + media
+
+m_knn <- sweep(m_knn_scaled, 2, m_sds, "*")
+m_knn <- sweep(m_knn, 2, m_means, "+")
+```
+
+#### Chekk remaining NAs
+```{r}
+## Quick check of remaining NA (to debug your error)
+cat("NA restantes en mujeres después de imputar:", sum(is.na(f_knn)), "\n")
+cat("NA restantes en hombres después de imputar:", sum(is.na(m_knn)), "\n")
+
+```
+
+#### Reconstruct final datasets by joining the different parts
+```{r}
+## We add SUBJID and VISIT again
+db_female_knn_imputed <- bind_cols(f_nonnum, f_knn)
+db_male_knn_imputed <- bind_cols(m_nonnum, m_knn)
+
+## Add non-imputable columns
+extra_female <- db_female %>%
+  select(DEATHAGE, EVERSMOKE, HXSMOKE, PASTALC, ALCFREQ, EX3XWK, REGEX,
+         EX_COMP10YRS, SLEEPING_HRS, NAPPING_HRS, SITTING_HRS)
+
+extra_male <- db_male %>%
+  select(DEATHAGE, EVERSMOKE, HXSMOKE, PASTALC, ALCFREQ, EX3XWK, REGEX,
+         EX_COMP10YRS, SLEEPING_HRS, NAPPING_HRS, SITTING_HRS)
+
+## Join everything
+db_female_final <- bind_cols(db_female_knn_imputed, extra_female)
+db_male_final <- bind_cols(db_male_knn_imputed, extra_male)
+```
+
+

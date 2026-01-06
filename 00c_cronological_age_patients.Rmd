@@ -1,0 +1,72 @@
+---
+title: "00c_cronological_age_patients"
+author: "Adriana Ibáñez"
+date: "2025-12-10"
+output: html_document
+---
+
+```{r}
+library(dplyr)
+library(tidyr)
+```
+
+
+## *Summary*
+This R script processes the "RBS_HEALTHYAGING.txt" dataset to extract and organize the chronological age of individuals that are going to be used in the TFM.
+
+
+```{r}
+df <- read.table("RBS_HEALTHYAGING.txt", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+```
+
+
+```{r}
+tabla_age_m <- df %>%
+  filter(SEX == "1") %>%
+  select(SUBJID, VISIT, AGE, DEATHAGE) %>%
+  distinct() %>%
+  pivot_wider(
+    names_from = VISIT,
+    values_from = AGE,
+    names_prefix = "AGE_visit_"
+  )
+```
+
+```{r}
+tabla_age_f <- df %>%
+  filter(SEX == "0") %>%
+  select(SUBJID, VISIT, AGE, DEATHAGE) %>%
+  distinct() %>%
+  pivot_wider(
+    names_from = VISIT,
+    values_from = AGE,
+    names_prefix = "AGE_visit_"
+  )
+
+```
+
+
+# *Age of the individuals that remained in the final databases (V7-V10)*
+
+```{r}
+db_male <- readRDS("db_male_final.rds")
+subjid_unicos_m <- unique(db_male$SUBJID)
+
+tabla_age_male <- tabla_age_m %>%
+  filter(SUBJID %in% subjid_unicos_m)
+```
+
+```{r}
+db_female <- readRDS("db_female_final.rds")
+subjid_unicos_f <- unique(db_female$SUBJID)
+
+tabla_age_female <- tabla_age_f %>%
+  filter(SUBJID %in% subjid_unicos_f)
+```
+
+
+```{r}
+write.csv(tabla_age_female, file = "tabla_age_female.csv", row.names = FALSE)
+write.csv(tabla_age_male, file = "tabla_age_male.csv", row.names = FALSE)
+```
+
