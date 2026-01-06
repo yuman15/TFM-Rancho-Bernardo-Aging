@@ -70,3 +70,71 @@ write.csv(tabla_age_female, file = "tabla_age_female.csv", row.names = FALSE)
 write.csv(tabla_age_male, file = "tabla_age_male.csv", row.names = FALSE)
 ```
 
+## Calculate median ages
+
+```{r}
+# Age statistics for females
+age_statistics_female <- tabla_age_female %>%
+  select(starts_with("AGE_visit_")) %>%
+  summarise(across(
+    everything(),
+    list(
+      mean = ~mean(., na.rm = TRUE),
+      min = ~min(., na.rm = TRUE),
+      max = ~max(., na.rm = TRUE)
+    ),
+    .names = "{.col}_{.fn}"
+  ))
+
+# Transpose for better visualization
+age_statistics_female_t <- age_statistics_female %>%
+  pivot_longer(
+    everything(),
+    names_to = "statistic",
+    values_to = "value"
+  ) %>%
+  separate(statistic, into = c("visit", "metric"), sep = "_(?=[^_]+$)") %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  ) %>%
+  mutate(range = paste(min, "-", max))
+
+print("Age Statistics - Females:")
+print(age_statistics_female_t)
+
+# Age statistics for males
+age_statistics_male <- tabla_age_male %>%
+  select(starts_with("AGE_visit_")) %>%
+  summarise(across(
+    everything(),
+    list(
+      mean = ~mean(., na.rm = TRUE),
+      min = ~min(., na.rm = TRUE),
+      max = ~max(., na.rm = TRUE)
+    ),
+    .names = "{.col}_{.fn}"
+  ))
+
+# Transpose for better visualization
+age_statistics_male_t <- age_statistics_male %>%
+  pivot_longer(
+    everything(),
+    names_to = "statistic",
+    values_to = "value"
+  ) %>%
+  separate(statistic, into = c("visit", "metric"), sep = "_(?=[^_]+$)") %>%
+  pivot_wider(
+    names_from = metric,
+    values_from = value
+  ) %>%
+  mutate(range = paste(min, "-", max))
+
+print("Age Statistics - Males:")
+print(age_statistics_male_t)
+
+# Optional: Save the results
+write.csv(age_statistics_female_t, file = "age_statistics_females.csv", row.names = FALSE)
+write.csv(age_statistics_male_t, file = "age_statistics_males.csv", row.names = FALSE)
+```
+

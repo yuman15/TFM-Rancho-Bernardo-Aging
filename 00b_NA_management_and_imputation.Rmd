@@ -329,7 +329,7 @@ f_scaled <- sweep(f_scaled, 2, f_sds, "/")   # divide for sd
 
 ```{r}
 # Men
-m_means <- colMeans(m_split, na.rm = TRUE) ## Quizá cambiar por mediana?
+m_means <- colMeans(m_split, na.rm = TRUE)
 m_sds <- apply(m_split, 2, sd, na.rm = TRUE)
 m_sds[m_sds == 0] <- 1
 
@@ -379,4 +379,122 @@ db_female_final <- bind_cols(db_female_knn_imputed, extra_female)
 db_male_final <- bind_cols(db_male_knn_imputed, extra_male)
 ```
 
+
+### Statistics on imputation per individual
+```{r}
+# For females
+# Count NAs BEFORE imputation per individual across all visits
+na_before_female <- db_female_final %>%
+  group_by(SUBJID) %>%
+  summarise(total_na_before = sum(across(everything(), ~sum(is.na(.))))) %>%
+  pull(total_na_before)
+
+# Count NAs AFTER imputation per individual across all visits
+na_after_female <- db_female_knn_imputed %>%
+  group_by(SUBJID) %>%
+  summarise(total_na_after = sum(across(everything(), ~sum(is.na(.))))) %>%
+  pull(total_na_after)
+
+# Calculate number of imputed values per individual
+n_imputed_female <- na_before_female - na_after_female
+
+imputation_summary_female <- data.frame(
+  n_imputed_vars = n_imputed_female
+) %>%
+  group_by(n_imputed_vars) %>%
+  summarise(n_individuals = n()) %>%
+  mutate(
+    percentage = round(n_individuals / sum(n_individuals) * 100, 2),
+    cumulative_pct = round(cumsum(n_individuals) / sum(n_individuals) * 100, 2)
+  )
+
+print("Imputation statistics - Females:")
+print(imputation_summary_female)
+
+# Individuals with no imputed data
+no_imputation_female <- sum(n_imputed_female == 0)
+print(paste("Total individuals (females):", length(n_imputed_female)))
+print(paste("Individuals with NO imputed data (females):", no_imputation_female))
+
+# Individuals with at least one imputed value
+some_imputation_female <- sum(n_imputed_female > 0)
+print(paste("Individuals with at least ONE imputed value (females):", some_imputation_female))
+
+# Individuals with more than 50% of variables imputed (across all visits)
+total_vars_female <- (ncol(db_female_final) - 2) * length(unique(db_female_final$VISIT))
+majority_imputed_female <- sum(n_imputed_female > (total_vars_female / 2))
+print(paste("Individuals with >50% of total variables imputed (females):", majority_imputed_female))
+
+# Mean and median of imputed variables per individual
+print(paste("Mean imputed variables per individual (females):", round(mean(n_imputed_female), 2)))
+print(paste("Median imputed variables per individual (females):", median(n_imputed_female)))
+print(paste("Min imputed variables (females):", min(n_imputed_female)))
+print(paste("Max imputed variables (females):", max(n_imputed_female)))
+
+
+# For males
+# Count NAs BEFORE imputation per individual across all visits
+na_before_male <- db_male_final %>%
+  group_by(SUBJID) %>%
+  summarise(total_na_before = sum(across(everything(), ~sum(is.na(.))))) %>%
+  pull(total_na_before)
+
+# Count NAs AFTER imputation per individual across all visits
+na_after_male <- db_male_knn_imputed %>%
+  group_by(SUBJID) %>%
+  summarise(total_na_after = sum(across(everything(), ~sum(is.na(.))))) %>%
+  pull(total_na_after)
+
+# Calculate number of imputed values per individual
+n_imputed_male <- na_before_male - na_after_male
+
+imputation_summary_male <- data.frame(
+  n_imputed_vars = n_imputed_male
+) %>%
+  group_by(n_imputed_vars) %>%
+  summarise(n_individuals = n()) %>%
+  mutate(
+    percentage = round(n_individuals / sum(n_individuals) * 100, 2),
+    cumulative_pct = round(cumsum(n_individuals) / sum(n_individuals) * 100, 2)
+  )
+
+print("Imputation statistics - Males:")
+print(imputation_summary_male)
+
+# Individuals with no imputed data
+no_imputation_male <- sum(n_imputed_male == 0)
+print(paste("Total individuals (males):", length(n_imputed_male)))
+print(paste("Individuals with NO imputed data (males):", no_imputation_male))
+
+# Individuals with at least one imputed value
+some_imputation_male <- sum(n_imputed_male > 0)
+print(paste("Individuals with at least ONE imputed value (males):", some_imputation_male))
+
+# Individuals with more than 50% of variables imputed (across all visits)
+total_vars_male <- (ncol(db_male_final) - 2) * length(unique(db_male_final$VISIT))
+majority_imputed_male <- sum(n_imputed_male > (total_vars_male / 2))
+print(paste("Individuals with >50% of total variables imputed (males):", majority_imputed_male))
+
+# Mean and median of imputed variables per individual
+print(paste("Mean imputed variables per individual (males):", round(mean(n_imputed_male), 2)))
+print(paste("Median imputed variables per individual (males):", median(n_imputed_male)))
+print(paste("Min imputed variables (males):", min(n_imputed_male)))
+print(paste("Max imputed variables (males):", max(n_imputed_male)))
+
+# Histogram for females
+ggplot(data.frame(n_imputed = n_imputed_female), aes(x = n_imputed)) +
+  geom_histogram(binwidth = 1, fill = "coral", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Imputed Variables per Individual - Females",
+       x = "Number of Imputed Variables (across all visits)",
+       y = "Number of Individuals") +
+  theme_minimal()
+
+# Histogram for males
+ggplot(data.frame(n_imputed = n_imputed_male), aes(x = n_imputed)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Imputed Variables per Individual - Males",
+       x = "Number of Imputed Variables (across all visits)",
+       y = "Number of Individuals") +
+  theme_minimal()
+```
 
