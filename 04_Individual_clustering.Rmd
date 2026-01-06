@@ -1,0 +1,423 @@
+---
+title: "04_clusters_inside_variables"
+author: "Adriana Ibáñez"
+date: "2025-10-28"
+output: pdf_document
+---
+
+
+```{r,warning=FALSE, message=FALSE, echo=TRUE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(cluster)
+library(ggplot2)
+library(openxlsx)
+```
+
+
+## Summary
+This R script conducts a bioinformatics pipeline for clustering analysis on longitudinal cohort data from a health study database (db_final_total.rds). Data is preprocessed by pivoting subject trajectories into wide-format dataframes, saved per variable and sex. Clustering employs Partitioning Around Medoids (PAM) with Manhattan distance, optimizing the number of clusters (k=1–10) via silhouette scores to identify subgroups with distinct temporal patterns. Outputs include silhouette plots, trend visualizations of mean cluster trajectories, and a summary table of optimal k, sample sizes, and average silhouette widths for downstream interpretation of phenotypic heterogeneity.
+
+
+
+### Data loading
+
+```{r}
+# LOAD THE TWO CLEANED AND SEPARATED DATASETS
+cat("Loading databases already separated by sex...\n")
+db_female <- readRDS("db_female_final.rds")
+db_male   <- readRDS("db_male_final.rds")
+
+# Make sure of the correct format
+db_female$SUBJID <- as.character(db_female$SUBJID)
+db_male$SUBJID   <- as.character(db_male$SUBJID)
+db_female$VISIT  <- as.character(db_female$VISIT)
+db_male$VISIT    <- as.character(db_male$VISIT)
+
+cat("Women loaded:", nrow(db_female), "observations,", ncol(db_female), "variables\n")
+cat("Men loaded:", nrow(db_male), "observations,", ncol(db_male), "variables\n")
+```
+
+### Asses numerical variables
+
+```{r}
+numerical_columns <- c(
+  "AGE", "WT_LB", "HT_IN", "BMI", "WAISTBEND_CM", "HIPMAX_CM", "WHRATIO",
+  "SBP2", "DBP2", "PULSE_30", "SOFT_MIDTH2", "SOFT_NAVTABLE", "FATPERC",
+  "FATFREEPERC", "BODYH20_TOT", "BODYH20_PERC", "LA_AREA", "RA_AREA",
+  "LL_AREA", "RL_AREA", "TOT_AREA", "LA_BMC", "RA_BMC", "TSPI_BMC",
+  "LSPI_BMC", "PELV_BMC", "LL_BMC", "RL_BMC", "TOT_BMC", "TR_BMC",
+  "LA_FAT", "RA_FAT", "TR_FAT", "LL_FAT", "RL_FAT", "SUBT_FAT", "HD_FAT",
+  "TOT_FAT", "LA_LEAN", "RA_LEAN", "TR_LEAN", "LL_LEAN", "RL_LEAN",
+  "SUBT_LEAN", "HD_LEAN", "TOT_LEAN", "LA_LBMC", "RA_LBMC", "TR_LBMC",
+  "LL_LBMC", "RL_LBMC", "SUBT_LBMC", "HD_LBMC", "TOT_LBMC", "LA_TOT",
+  "RA_TOT", "TR_TOT", "LL_TOT", "RL_TOT", "SUBT_TOT", "HD_TOT", "TOT_TOT",
+  "LA_PCN", "RA_PCN", "TR_PCN", "LL_PCN", "RL_PCN", "SUBT_PCN", "TOT_PCN",
+  "FASTHRS", "GLUCOSE", "GLUCOSE_CHALLENGE", "INSULIN", "INSULIN_CHALLENGE",
+  "CPEPTIDE", "PROINSULIN", "GHBHPLC", "UREA_NITROGEN", "CREATININE",
+  "TOT_PROTEIN", "ALBUMIN", "GLOBULIN", "TOT_BILIRUBIN", "GGT", "SGOT",
+  "SGPT", "LDH", "ALK_PHOS", "CALCIUM", "URIC_ACID", "SODIUM", "POTASSIUM",
+  "CHLORIDE", "CO2", "INORG_PHOS", "IRON", "MAGNESIUM", "CHOLESTEROL",
+  "TRIGLYCERIDES", "HDL", "LDL", "HEMOGLOBIN", "HEMATOCRIT", "WHITECOUNT",
+  "REDCOUNT", "MCV", "MCH", "MCHC", "ALBUMIN_DIPSTICK", "URINE_ALBUMIN",
+  "URINE_CREATININE", "TESTOSTERONE", "ESTRADIOL", "BIO_TESTOSTERONE",
+  "BIO_ESTRADIOL", "CRP", "PINP", "NTX_SERUM", "NTX_URINE_VITROS",
+  "DEATHAGE", "SLEEPING_HRS", "NAPPING_HRS", "SITTING_HRS"
+)
+```
+
+### Create dataframes by variable
+```{r}
+# Create a list with both datasets
+db_list <- list(
+  female = db_female,
+  male   = db_male
+)
+
+# Output directory
+base_dir <- "dataframes_by_var"
+dir.create(file.path(base_dir, "female"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(base_dir, "male"),   recursive = TRUE, showWarnings = FALSE)
+
+cat("Creando dataframes por variable (solo con variables presentes en cada sexo)...\n")
+
+# Function to process a variable in a specific sex
+process_var_sex <- function(var_name, data, sex_label, sex_dir) {
+  if (!var_name %in% colnames(data)) {
+    return(NULL)
+  }
+  
+  df <- data %>%
+    select(SUBJID, VISIT, all_of(var_name)) %>%
+    filter(!is.na(.data[[var_name]])) %>%
+    pivot_wider(names_from = VISIT, values_from = all_of(var_name), names_prefix = "V") %>%
+    column_to_rownames("SUBJID")
+  
+  # Secure columns V7 to V10
+  expected <- paste0("V", 7:10)
+  missing_cols <- setdiff(expected, colnames(df))
+  if (length(missing_cols) > 0) {
+    df[missing_cols] <- NA
+  }
+  df <- df[, expected, drop = FALSE]
+  
+  # Save only if you have at least one visit
+  if (nrow(df) > 0) {
+    saveRDS(df, file.path(sex_dir, paste0(var_name, "_", sex_label, ".rds")))
+  }
+  return(df)
+}
+
+# Process women
+cat("Procesando mujeres...\n")
+female_vars <- colnames(db_female)
+female_vars <- female_vars[!female_vars %in% c("SUBJID", "VISIT", "SEX")]  # excluir metadatos
+
+for (var in female_vars) {
+  process_var_sex(var, db_female, "female", file.path(base_dir, "female"))
+}
+
+# Process men
+cat("Procesando hombres...\n")
+male_vars <- colnames(db_male)
+male_vars <- male_vars[!male_vars %in% c("SUBJID", "VISIT", "SEX")]
+
+for (var in male_vars) {
+  process_var_sex(var, db_male, "male", file.path(base_dir, "male"))
+}
+
+cat("¡Dataframes per variable created correctly!\n")
+cat("Women:", length(list.files(file.path(base_dir, "female"), pattern = "\\.rds$")), "variables\n")
+cat("Men:", length(list.files(file.path(base_dir, "male"), pattern = "\\.rds$")), "variables\n")
+
+```
+
+```{r}
+# Verify Men
+cat("Example: BMI_male.rds\n")
+bmi_male <- tryCatch(readRDS(file.path(base_dir, "male", "BMI_male.rds")), error = function(e) NULL)
+if (is.null(bmi_male)) {
+  cat("File not found or empty.\n")
+} else {
+  cat("Class:", class(bmi_male), "\n")
+  cat("Dim:", dim(bmi_male), "\n")
+  head(bmi_male)
+}
+
+# Verify Women
+cat("\nExample: BMI_female.rds\n")
+bmi_female <- tryCatch(readRDS(file.path(base_dir, "female", "BMI_female.rds")), error = function(e) NULL)
+if (is.null(bmi_female)) {
+  cat("File not found or empty.\n")
+} else {
+  cat("Class:", class(bmi_female), "\n")
+  cat("Dim:", dim(bmi_female), "\n")
+  head(bmi_female)
+}
+```
+
+
+```{r}
+# Load file paths (now correctly separated)
+male_files   <- list.files(file.path(base_dir, "male"),   pattern = "\\.rds$", full.names = TRUE)
+female_files <- list.files(file.path(base_dir, "female"), pattern = "\\.rds$", full.names = TRUE)
+
+cat("Files found:\n")
+cat("  Women:", length(male_files), "\n")
+cat("  Men:", length(female_files), "\n")
+
+# Combine with descriptive names for map()
+all_files <- c(male_files, female_files)
+names(all_files) <- basename(all_files)
+```
+
+# Clustering
+```{r}
+# Clustrering
+cat("\nStarting clustering...\n")
+cluster_dir <- file.path(base_dir, "clusters_per_var")
+dir.create(cluster_dir, showWarnings = FALSE, recursive = TRUE)
+
+
+# FOLDER FOR ALL SILHOUETTE GRAPHICS (PNG)
+all_sil_dir <- file.path(base_dir, "all_silhouette_plots")
+dir.create(all_sil_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Diagnostic
+cat("\nFile verification\n")
+cat("Hombres:", length(male_files), " | Women:", length(female_files), "\n")
+if (length(female_files) == 0) stop("There is no women files")
+cat("Example women:", basename(female_files[1]), " | Existe:", file.exists(female_files[1]), "\n")
+
+analyze_var <- function(file_path) {
+  cat("Processing:", basename(file_path), "\n")  # Diagnosis
+  
+  data <- tryCatch(readRDS(file_path), error = function(e) {
+    cat("  ERROR reading:", file_path, "\n")
+    return(NULL)
+  })
+  if (is.null(data) || nrow(data) < 2) {
+    cat("  Insufficient or no data\n")
+    return(NULL)
+  }
+  
+  data <- data[complete.cases(data), ]
+  if (nrow(data) < 2) {
+    cat("  Less than 2 complete rows\n")
+    return(NULL)
+  }
+  
+  # Use basename + regex correctly
+  file_name <- basename(file_path)
+  var_name <- sub("_(male|female)\\.rds$", "", file_name, ignore.case = TRUE)
+  sex_group <- ifelse(grepl("_female", file_name), "Women", "Men")
+  sex_group_en <- ifelse(sex_group == "Women", "Women", "Men")
+  
+  cat("  → Variable:", var_name, "| Sexo:", sex_group, "| n =", nrow(data), "\n")
+  
+  dir_out <- file.path(cluster_dir, paste0(var_name, "_", sex_group))
+  dir.create(dir_out, recursive = TRUE, showWarnings = FALSE)
+  
+    diss <- dist(data, method = "manhattan")
+  if (is.null(diss)) return(NULL)
+ 
+  # K rank. This can be changed.
+  max_k <- min(10, nrow(data))
+  k_range <- 1:max_k
+  sil_scores <- numeric(length(k_range))
+ 
+  # k = 1: all in one cluster → Silhouette = 0
+  sil_scores[1] <- 0
+ 
+  # k = 2 a max_k: calcule with PAM
+  if (max_k >= 2) {
+    for (i in 2:length(k_range)) {
+      k <- k_range[i]
+      pam_fit <- pam(diss, k = k, diss = TRUE)
+      sil <- silhouette(pam_fit$clustering, diss)
+      sil_scores[i] <- mean(sil[, 3])
+    }
+  }
+ 
+  # Determine optimal K automatically (this can be changed with the k value of interest)
+  optimal_k <- k_range[which.max(sil_scores)]
+ 
+  # Rule: if all k >= 2 have sil < 0.25, prefer k=1
+  if (max_k >= 2 && max(sil_scores[-1]) < 0.25) {
+    optimal_k <- 1
+  }
+  if (nrow(data) < optimal_k) optimal_k <- nrow(data)
+ 
+  # GRAPH: Silhouette Score vs k (includes k=1)
+  sil_plot_df <- data.frame(k = k_range, avg_sil = sil_scores)
+ 
+  p_sil <- ggplot(sil_plot_df, aes(x = k, y = avg_sil)) +
+    geom_line(color = "steelblue", size = 1.2) +
+    geom_point(color = "steelblue", size = 3) +
+    geom_point(data = sil_plot_df[sil_plot_df$avg_sil == max(sil_plot_df$avg_sil), ],
+               color = "red", size = 4, shape = 21, fill = "white", stroke = 1.5) +
+    scale_x_continuous(breaks = k_range) +
+    labs(
+      title = paste0("Silhouette Score for Optimal k (", var_name, " - ", sex_group, ")"),
+      x = "Number of Clusters (k)",
+      y = "Average Silhouette Width"
+    ) +
+    theme_minimal(base_size = 25) +
+    theme(
+      plot.title = element_text(size = 12, face = "bold"),
+      panel.grid.minor = element_blank()
+    ) +
+    annotate("text",
+             x = optimal_k, y = max(sil_scores) + 0.015,
+             label = paste("Optimal k =", optimal_k),
+             color = "red", size = 3.5, fontface = "bold")
+ 
+  # Add dot at k=1 with clear label
+  if (1 %in% k_range) {
+    p_sil <- p_sil +
+      annotate("text", x = 1, y = 0.02, label = "k=1 (no clusters)", 
+               color = "gray40", size = 3, hjust = 0, vjust = 0, fontface = "italic")
+  }
+ 
+# Save in individual file (png)
+png_file_individual <- file.path(dir_out, "silhouette_score_vs_k.png")
+ggsave(png_file_individual, p_sil, width = 8, height = 5, dpi = 300, device = "png")
+
+# Save in the global file
+global_png_file <- file.path(all_sil_dir, paste0(var_name, "_", sex_group, "_silhouette.png"))
+ggsave(global_png_file, p_sil, width = 8, height = 5, dpi = 300, device = "png")
+ 
+# Final clustering
+  if (optimal_k == 1) {
+    pam_final <- list(clustering = rep(1, nrow(data)))
+    class(pam_final) <- "pam"
+  } else {
+    pam_final <- pam(diss, k = optimal_k, diss = TRUE)
+  }
+  
+
+# Silhouette for optimal k
+sil_data <- silhouette(pam_final$clustering, diss)
+if (is.matrix(sil_data) && ncol(sil_data) >= 3) {
+  sil_df <- as.data.frame(sil_data)
+  colnames(sil_df) <- c("Cluster", "Neighbor", "Silhouette")
+  sil_df$Subject <- rownames(data)
+  sil_df$Cluster <- factor(sil_df$Cluster)
+  
+  # Sort by cluster and silhouette in descending order
+  sil_df <- sil_df %>%
+    arrange(Cluster, desc(Silhouette)) %>%
+    mutate(Subject = factor(Subject, levels = Subject))
+  
+  # Graph: Silhouette plot for optimal k
+  p_sil <- ggplot(sil_df, aes(x = Subject, y = Silhouette, group = Cluster)) +
+    geom_line(aes(color = Cluster), size = 0.8) +
+    geom_point(aes(color = Cluster), size = 1.2) +
+    coord_flip() +
+    scale_x_discrete(breaks = NULL) +
+    labs(
+      title = paste0("Silhouette Plot (k = ", optimal_k, ")"),
+      x = "Observations (ordered by cluster and silhouette width)",
+      y = "Silhouette Width"
+    ) +
+    theme_minimal(base_size = 25) +
+    theme(
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      panel.grid.major.y = element_blank(),
+      legend.position = "bottom"
+    ) +
+    geom_hline(yintercept = mean(sil_df$Silhouette), linetype = "dashed", color = "gray50", size = 0.5) +
+    annotate("text", x = length(sil_df$Subject) * 0.95, y = mean(sil_df$Silhouette) + 0.02,
+             label = paste("Avg:", round(mean(sil_df$Silhouette), 3)), size = 3, color = "gray30")
+  
+  ggsave(file.path(dir_out, "silhouette.pdf"), p_sil, width = 8, height = 6, dpi = 300)
+}
+  
+  # Trends: cluster trends in the same graph (for variable)
+  data_long <- data %>%
+    mutate(SUBJID = rownames(.), Cluster = as.factor(pam_final$clustering)) %>%
+    pivot_longer(cols = starts_with("V"), names_to = "VISIT", values_to = "Value") %>%
+    mutate(VISIT = as.numeric(sub("V", "", VISIT)))
+ 
+  trends <- data_long %>%
+    group_by(Cluster, VISIT) %>%
+    summarise(Mean = mean(Value, na.rm = TRUE), .groups = "drop")
+ 
+  # Translate for the graph
+  sex_group_en <- ifelse(sex_group == "Mujeres", "Women", "Men")
+ 
+  p_trends <- ggplot(trends, aes(x = VISIT, y = Mean, color = Cluster, group = Cluster)) +
+    geom_line(size = 1.5, alpha = 0.9) +
+    geom_point(size = 3) +
+    scale_x_continuous(breaks = unique(data_long$VISIT)) +
+    labs(
+      title = paste0(var_name, " - ", sex_group_en, " (k = ", optimal_k, ")"),
+      x = "Visit",
+      y = "Mean Value",
+      color = "Cluster"
+    ) +
+    theme_minimal(base_size = 25) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      legend.position = "top",
+      panel.grid.minor = element_blank()
+    )
+  # Save in PNG
+  ggsave(file.path(dir_out, "trends.png"), p_trends, width = 9, height = 6, dpi = 300, device = "png")
+ 
+  # Save in PDF
+  ggsave(file.path(dir_out, "trends.pdf"), p_trends, width = 9, height = 6, dpi = 300)
+  
+  list(var = var_name, sex = sex_group, k = optimal_k, avg_sil = max(sil_scores), n = nrow(data))
+}
+```
+## Execute
+This process will take some time. Is has to run clustering for all variables and datasets.
+
+```{r}
+# Execute to all variables in the different datasets
+results_cluster <- map(all_files, analyze_var, .progress = TRUE)
+results_cluster <- compact(results_cluster)
+
+summary_df <- map_dfr(results_cluster, ~ as.data.frame(.x))
+summary_csv_path <- file.path(cluster_dir, "resumen_k_optimo.csv")
+write.csv(summary_df, summary_csv_path, row.names = FALSE)
+
+cat("¡COMPLETED!\n")
+cat("→", length(results_cluster), "analyses performed\n")
+cat("→ PDFs en:", cluster_dir, "/\n")
+```
+## Summary table
+In this table we show the optimal k per variable.
+
+```{r}
+# Load the summary
+summary_df <- read_csv(file.path(cluster_dir, "resumen_k_optimo.csv"))
+
+# Sort and format the table
+tabla_k <- summary_df %>%
+  select(var, sex, k, n, avg_sil) %>%
+  mutate(
+    sex = recode(sex, "Hombres" = "Hombres", "Mujeres" = "Mujeres"),
+    avg_sil = round(avg_sil, 3)
+  ) %>%
+  arrange(var, desc(sex))  # Men on top, women on the bottom
+
+# Show in RMarkdown
+knitr::kable(tabla_k,
+             col.names = c("Variable", "Sex", "k optimal", "n", "Silhouette"),
+             caption = "Table S1. Optimal number of clusters per variable and sex")
+
+# Save to Excel
+write.xlsx(tabla_k, 
+           file = "Tabla_S1_k_optimo.xlsx",
+           sheetName = "k_optimo",
+           rowNames = FALSE,
+           overwrite = TRUE)
+
+cat("Table saved successfully in 'Tabla_S1_k_optimo.xlsx'\n")
+```
+

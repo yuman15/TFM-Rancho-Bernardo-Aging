@@ -1,0 +1,811 @@
+---
+title: "Clusters de variables Female separated hologic - other variables"
+author: "Adriana Ibáñez"
+date: "2025-10-29"
+output: pdf_document
+---
+
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(cluster)
+library(ggplot2)
+library(circlize)
+library(tibble)
+
+```
+
+## Summary
+This script performs clustering analysis on female variables based on their change patterns over multiple visits. It reads in data files, reshapes the data, calculates average values, computes crude derivatives, and applies clustering techniques to identify groups of variables with similar trajectories. The results are visualized through various plots and summarized in tables.
+
+```{r}
+# File routes
+base_dir <- "dataframes_by_var"
+female_dir <- file.path(base_dir, "female")
+female_files <- list.files(female_dir, pattern = "\\.rds$", full.names = TRUE)
+names(female_files) <- tools::file_path_sans_ext(basename(female_files))
+```
+
+```{r}
+cat("Loading women data...\n")
+data_list <- map(female_files, readRDS)
+cat("Loaded variables:", length(data_list), "\n")
+```
+
+```{r}
+cat("Construyendo tabla larga...\n")
+
+long_data <- map_df(names(data_list), ~{
+  df <- data_list[[.x]]
+  var_name <- .x  # ex: "BMI_female"
+  df %>%
+    rownames_to_column("SUBJID") %>%
+    pivot_longer(cols = starts_with("V"), names_to = "VISIT", values_to = "Value") %>%
+    mutate(Variable = var_name, VISIT = as.numeric(sub("V", "", VISIT))) %>%
+    select(SUBJID, Variable, VISIT, Value)
+}, .id = NULL)
+
+```
+
+### Added for editing the data to remove problematic individual or variables
+
+# After creating long_data, add this filter to remove the specific individual
+long_data <- long_data %>%
+  filter(SUBJID != "0ILJ00464")
+
+# After creating long_data, add this filter to remove the specific variables
+long_data <- long_data %>%
+  filter(!Variable %in% c("SUBT_LBMC_female", "SUBT_LEAN_female", "TOT_LBMC_female", "TOT_LEAN_female", "TR_LBMC_female", "TR_LEAN_female", "SUBT_FAT_female", "TOT_FAT_female", "TESTOSTERONE_female", "TOT_TOT_female", "SUBT_TOT_female", "TR_TOT_female"))
+
+
+```{r}
+# Define the lists of variables for each group, adding "_female"
+group_p_vars <- c("BIO_RES_female", "FATPERC_female", "FATMASS_female", "FATFREEMASS_female", "FATFREEPERC_female", "LEAN_FAT_female", "RATIO_LOWER_female", "RATIO_UPPER_female", "BODYH20_TOT_female", "BODYH20_PERC_female", "REST_ENERGY_female", "TARGETWT_LOWER_female", "TARGETWT_UPPER_female", "RECFAT_LOWER_female", "RECFAT_UPPER_female", "BIO_REA_female", "DCN_VERYLGHT_female", "DCN_LIGHT_female", "DCN_MOD_female", "DCN_HEAVY_female", "DCN_VERYHVY_female", "HD_AREA_female", "LA_AREA_female", "RA_AREA_female", "LRIB_AREA_female", "RRIB_AREA_female", "TSPI_AREA_female", "LSPI_AREA_female", "PELV_AREA_female", "LL_AREA_female", "RL_AREA_female", "SUBT_AREA_female", "TOT_AREA_female", "HD_BMC_female", "LA_BMC_female", "RA_BMC_female", "LRIB_BMC_female", "RRIB_BMC_female", "TSPI_BMC_female", "LSPI_BMC_female", "PELV_BMC_female", "LL_BMC_female", "RL_BMC_female", "TOT_BMC_female", "TR_BMC_female", "SUBT_BMC_female", "HD_BMD_female", "LA_BMD_female", "RA_BMD_female", "LRIB_BMD_female", "RRIB_BMD_female", "TSPI_BMD_female", "LSPI_BMD_female", "PELV_BMD_female", "LL_BMD_female", "RL_BMD_female", "SUBT_BMD_female", "TOT_BMD_female", "LA_FAT_female", "RA_FAT_female", "TR_FAT_female", "LL_FAT_female", "RL_FAT_female", "SUBT_FAT_female", "HD_FAT_female", "TOT_FAT_female", "LA_LEAN_female", "RA_LEAN_female", "TR_LEAN_female", "LL_LEAN_female", "RL_LEAN_female", "SUBT_LEAN_female", "HD_LEAN_female", "TOT_LEAN_female", "LA_LBMC_female", "RA_LBMC_female", "TR_LBMC_female", "LL_LBMC_female", "RL_LBMC_female", "SUBT_LBMC_female", "HD_LBMC_female", "TOT_LBMC_female", "LA_TOT_female", "RA_TOT_female", "TR_TOT_female", "LL_TOT_female", "RL_TOT_female", "SUBT_TOT_female", "HD_TOT_female", "TOT_TOT_female", "LA_PCN_female", "RA_PCN_female", "TR_PCN_female", "LL_PCN_female", "RL_PCN_female", "SUBT_PCN_female", "HD_PCN_female", "TOT_PCN_female")
+
+
+# Create subsets of long_data for each group
+# First, get all unique variables
+all_vars <- unique(long_data$Variable)
+
+# Group P: only those that exist in the data
+group_p_vars <- group_p_vars[group_p_vars %in% all_vars]
+long_data_p <- long_data %>% filter(Variable %in% group_p_vars)
+
+# Group B: the rest
+group_b_vars <- all_vars[!all_vars %in% c(group_p_vars)]
+long_data_b <- long_data %>% filter(Variable %in% group_b_vars)
+
+saveRDS(group_p_vars, file = "group_p_vars_female")
+saveRDS(group_b_vars, file = "group_b_vars_female")
+```
+
+
+# PHYSICAL: 1 DERIVATIVE -> MEDIAN
+```{r}
+# 1. Calculate individual derivatives
+wide_indiv_p <- long_data_p %>%
+  select(SUBJID, Variable, VISIT, Value) %>%
+  pivot_wider(names_from = VISIT, names_prefix = "V", values_from = Value)
+
+deltas_indiv_p <- wide_indiv_p %>%
+  mutate(
+    dV8_V7  = V8 - V7,
+    dV9_V8  = V9 - V8,
+    dV10_V9 = V10 - V9
+  ) %>%
+  select(SUBJID, Variable, dV8_V7, dV9_V8, dV10_V9) %>%
+  pivot_longer(
+    cols = starts_with("dV"),
+    names_to = "Intervalo",
+    values_to = "Delta_indiv"
+  ) %>%
+  drop_na(Delta_indiv)
+
+# 2. MEDIAN of individual change by variable and interval
+deltas_summary_p <- deltas_indiv_p %>%
+  group_by(Variable, Intervalo) %>%
+  summarise(
+    Median_Delta = median(Delta_indiv, na.rm = TRUE),
+    Mean_Delta   = mean(Delta_indiv, na.rm = TRUE),
+    SD_Delta     = sd(Delta_indiv, na.rm = TRUE),
+    n_pairs      = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n_pairs >= 8)
+
+# 3. Matrix for clustering
+deltas_p <- deltas_summary_p %>%
+  select(Variable, Intervalo, Median_Delta) %>%
+  pivot_wider(names_from = Intervalo, values_from = Median_Delta) %>%
+  drop_na()
+
+deltas_matrix_p <- deltas_p %>%
+  column_to_rownames("Variable") %>%
+  as.matrix()
+
+row_sds_p <- apply(deltas_matrix_p, 1, sd, na.rm = TRUE)
+problematic_vars_p <- names(row_sds_p)[row_sds_p == 0 | is.na(row_sds_p)]
+print(problematic_vars_p)
+
+deltas_clean_p <- deltas_p %>%
+  filter(!Variable %in% problematic_vars_p)
+
+
+deltas_matrix_clean_p <- deltas_clean_p %>%
+  column_to_rownames("Variable") %>%
+  as.matrix()
+
+# 4. Clustering (same as before)
+diss_deltas_p <- dist(deltas_matrix_clean_p, method = "euclidean")
+
+
+k_range <- 2:15
+sil_scores_p <- numeric(length(k_range))
+
+for (i in seq_along(k_range)) {
+  k <- k_range[i]
+  pam_fit <- pam(diss_deltas_p, k = k, diss = TRUE)
+  sil <- silhouette(pam_fit$clustering, diss_deltas_p)
+  sil_scores_p[i] <- mean(sil[, 3])
+}
+
+optimal_k_p <- k_range[which.max(sil_scores_p)]
+
+sil_df_p <- data.frame(
+  k = k_range,
+  Silhouette_Score = round(sil_scores_p, 3),
+  Optimal = ifelse(k_range == optimal_k_p, "Sí", "")
+)
+
+cat("SILHOUETTE SCORES for k (Group P Mujeres)\n")
+print(sil_df_p)
+
+p_sil_p <- ggplot(sil_df_p, aes(x = k, y = Silhouette_Score)) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_point(data = subset(sil_df_p, Optimal == "Sí"), color = "red", size = 4, shape = 17) +
+  scale_x_continuous(breaks = k_range) +
+  labs(
+    title = "Silhouette Score - Women Physical Vars",
+    subtitle = paste("optimal k =", optimal_k_p),
+    x = "Clusters number (k)",
+    y = "Average Silhouette"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(plot.title = element_text(face = "bold"), plot.subtitle = element_text(color = "gray40")) +
+  geom_text(aes(label = Silhouette_Score), vjust = -1.2, size = 3.5, color = "black")
+
+print(p_sil_p)
+ggsave(file.path(base_dir, "silhouette_scores_robust_group_p_female.png"), p_sil_p, width = 8, height = 5, dpi = 300)
+
+# FINAL CLUSTERING
+optimal_k_p <- 4
+pam_deltas_p <- pam(diss_deltas_p, k = optimal_k_p, diss = TRUE)
+deltas_clean_p$Cluster <- as.factor(pam_deltas_p$clustering)
+
+# GRAPHS
+plot_deltas_p <- deltas_clean_p %>%
+  pivot_longer(
+    cols = starts_with("d"),
+    names_to = "Intervalo",
+    values_to = "Cambio"
+  ) %>%
+  mutate(
+    Intervalo = factor(Intervalo, levels = c("dV8_V7", "dV9_V8", "dV10_V9")),
+    Intervalo = recode(Intervalo,
+                       "dV8_V7" = "V8 - V7",
+                       "dV9_V8" = "V9 - V8",
+                       "dV10_V9" = "V10 - V9")
+  )
+
+p_deriv_p <- ggplot(plot_deltas_p, aes(x = Intervalo, y = Cambio, group = Variable, color = Cluster)) +
+  geom_line(alpha = 0.6, size = 0.8) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    title = paste("Patterns of change - Women Physical Vars (k =", optimal_k_p, ")"),
+    subtitle = "Median of individual changes",
+    x = "Interval between visits",
+    y = "Medium change (original units)",
+    color = "Cluster"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+print(p_deriv_p)
+ggsave(file.path(base_dir, "derivadas_por_cluster_group_p_female.png"), p_deriv_p, width = 10, height = 6, dpi = 300)
+
+# FACETED GRAPH
+p_facet_p <- ggplot(plot_deltas_p, aes(x = Intervalo, y = Cambio, group = Variable)) +
+  geom_line(alpha = 0.7, size = 0.9, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~ Cluster, ncol = 2, labeller = labeller(Cluster = function(x) paste("Cluster", x))) +
+  labs(
+    title = paste("Patterns of change by cluster (k =", optimal_k_p, ") - Physical Women"),
+    subtitle = "Robust method: median of individual changes",
+    x = "Interval between visits",
+    y = "Medium change (original units)"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+    strip.text = element_text(face = "bold", size = 12),
+    panel.grid.minor = element_blank()
+  )
+
+print(p_facet_p)
+ggsave(file.path(base_dir, "derivadas_facet_group_p_female.png"), p_facet_p, width = 12, height = 8, dpi = 300)
+
+# TABLA
+tabla_clusters_p <- deltas_clean_p %>%
+  count(Cluster, name = "N_Variables") %>%
+  arrange(desc(N_Variables)) %>%
+  mutate(
+    Porcentaje = round(N_Variables / sum(N_Variables) * 100, 1),
+    Ejemplos = map_chr(Cluster, ~ {
+      vars <- deltas_clean_p %>% filter(Cluster == .x) %>% pull(Variable)
+      paste(head(sort(vars), 3), collapse = ", ")
+    })
+  ) %>%
+  select(Cluster, N_Variables, Porcentaje, Ejemplos)
+
+cat("=== VARIABLES POR CLUSTER (método robusto, Group P Mujeres) ===\n")
+print(tabla_clusters_p)
+write.table(tabla_clusters_p, file.path(base_dir, "tabla_clusters_group_p_female.txt"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+```
+## *Subclustering cluster 1 - Physical vars Women*
+
+```{r}
+# 1. Filter only the variables in Cluster 1
+vars_cluster1 <- deltas_clean_p %>%
+  filter(Cluster == 1) %>%
+  pull(Variable)
+
+cat("Número de variables en Cluster 1:", length(vars_cluster1), "\n")
+cat("Ejemplos:", paste(head(sort(vars_cluster1), 10), collapse = ", "), "\n\n")
+
+# 2. Recreate the array using only those variables
+deltas_sub <- deltas_summary_p %>%                     # We used the original summary (it has all the variables)
+  filter(Variable %in% vars_cluster1) %>%
+  select(Variable, Intervalo, Median_Delta) %>%
+  pivot_wider(names_from = Intervalo, values_from = Median_Delta) %>%
+  drop_na()
+
+deltas_matrix_sub <- deltas_sub %>%
+  column_to_rownames("Variable") %>%
+  as.matrix()
+
+# Remove rows with zero variance (in case any remained constant within the subgroup)
+row_sds_sub <- apply(deltas_matrix_sub, 1, sd, na.rm = TRUE)
+problematic_sub <- names(row_sds_sub)[row_sds_sub == 0 | is.na(row_sds_sub)]
+
+if(length(problematic_sub) > 0){
+  cat("Variables eliminated due to zero variance in sub-cluster:", problematic_sub, "\n")
+  deltas_matrix_sub <- deltas_matrix_sub[!rownames(deltas_matrix_sub) %in% problematic_sub, , drop = FALSE]
+}
+
+# 3. Distance and search for the optimal k (silhouette) for the sub-cluster
+diss_sub <- dist(deltas_matrix_sub, method = "euclidean")
+
+k_range_sub <- 2:15
+sil_scores_sub <- numeric(length(k_range_sub))
+
+for (i in seq_along(k_range_sub)) {
+  k <- k_range_sub[i]
+  pam_sub <- pam(diss_sub, k = k, diss = TRUE)
+  sil <- silhouette(pam_sub$clustering, diss_sub)
+  sil_scores_sub[i] <- mean(sil[, 3])
+}
+
+optimal_k_sub <- 4
+
+cat("optimal k for sub-clustering of Cluster 1=", optimal_k_sub, "\n")
+
+# Silhouette chart for the sub-cluster
+sil_df_sub <- data.frame(
+  k = k_range_sub,
+  Silhouette_Score = round(sil_scores_sub, 3),
+  Optimal = ifelse(k_range_sub == optimal_k_sub, "Sí", "")
+)
+
+p_sil_sub <- ggplot(sil_df_sub, aes(x = k, y = Silhouette_Score)) +
+  geom_line(color = "darkorange", size = 1) +
+  geom_point(size = 3, color = "darkorange") +
+  geom_point(data = subset(sil_df_sub, Optimal == "Sí"), color = "red", size = 4, shape = 17) +
+  scale_x_continuous(breaks = k_range_sub) +
+  labs(title = "Silhouette Score - Sub-clustering Cluster 1 (Women Physical)",
+       subtitle = paste("optimal k =", optimal_k_sub),
+       x = "Number of sub-clusters", y = "Average Silhouette") +
+  theme_minimal(base_size = 14) +
+  geom_text(aes(label = Silhouette_Score), vjust = -1.2, size = 3.5)
+
+print(p_sil_sub)
+ggsave(file.path(base_dir, "silhouette_subcluster1_group_p_female.png"), p_sil_sub, width = 8, height = 5, dpi = 300)
+
+# 4. Final clustering of the sub-cluster
+pam_sub <- pam(diss_sub, k = optimal_k_sub, diss = TRUE)
+
+deltas_sub$SubCluster <- as.factor(pam_sub$clustering)
+
+# 5. Sub-clustering charts
+plot_sub <- deltas_sub %>%
+  pivot_longer(cols = starts_with("dV"),
+               names_to = "Intervalo",
+               values_to = "Cambio") %>%
+  mutate(Intervalo = factor(Intervalo, levels = c("dV8_V7", "dV9_V8", "dV10_V9")),
+         Intervalo = recode(Intervalo,
+                            "dV8_V7" = "V8 - V7",
+                            "dV9_V8" = "V9 - V8",
+                            "dV10_V9" = "V10 - V9"))
+
+# Colored lines by sub-cluster
+p_sub1 <- ggplot(plot_sub, aes(x = Intervalo, y = Cambio, group = Variable, color = SubCluster)) +
+  geom_line(alpha = 0.7, size = 0.9) +
+  geom_point(size = 1.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  labs(title = paste("Sub-patterns inside Cluster 1 (k =", optimal_k_sub, ") - Women Physical"),
+       subtitle = "Median of individual changes",
+       x = "Interval between visits", y = "Medium change", color = "Sub-cluster") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom")
+
+print(p_sub1)
+ggsave(file.path(base_dir, "subcluster1_lines_group_p_female.png"), p_sub1, width = 11, height = 7, dpi = 300)
+
+# Faceted by sub-cluster
+p_facet_sub <- ggplot(plot_sub, aes(x = Intervalo, y = Cambio, group = Variable)) +
+  geom_line(alpha = 0.7, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~ SubCluster, ncol = 2, labeller = labeller(SubCluster = function(x) paste("SubCluster", x))) +
+  labs(title = paste("Detailed trajectories - Cluster 1 subdivided (k =", optimal_k_sub, ")"),
+       subtitle = "Women Physical variables - robust method") +
+  theme_minimal(base_size = 15) +
+  theme(strip.text = element_text(face = "bold"))
+
+print(p_facet_sub)
+ggsave(file.path(base_dir, "subcluster1_facet_group_p_female.png"), p_facet_sub, width = 12, height = 8, dpi = 300)
+
+# 6. Summary table of sub-clusters
+tabla_subclusters <- deltas_sub %>%
+  count(SubCluster, name = "N_Variables") %>%
+  arrange(desc(N_Variables)) %>%
+  mutate(Porcentaje = round(N_Variables / sum(N_Variables) * 100, 1),
+         Ejemplos = map_chr(SubCluster, ~{
+           vars <- deltas_sub %>% filter(SubCluster == .x) %>% pull(Variable)
+           paste(head(sort(vars), 4), collapse = ", ")
+         }))
+
+cat("SUB-CLUSTERS INSIDE CLUSTER 1 (Mujeres físicas) \n")
+print(tabla_subclusters)
+write.table(tabla_subclusters, file.path(base_dir, "tabla_subclusters_cluster1_group_p_female.txt"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+```
+```{r}
+vars_no_change1 <- deltas_sub$Variable[deltas_sub$SubCluster == 1]
+
+saveRDS(vars_no_change1, "variables_no_cambio_subcluster_physical_female.rds")
+```
+
+
+
+
+
+
+## BIOCHEMICAL: 1ST DERIVATIVE -> MEDIAN
+
+```{r}
+# 1. Calculate individual derivatives
+wide_indiv_b <- long_data_b %>%
+  select(SUBJID, Variable, VISIT, Value) %>%
+  pivot_wider(names_from = VISIT, names_prefix = "V", values_from = Value)
+
+deltas_indiv_b <- wide_indiv_b %>%
+  mutate(
+    dV8_V7  = V8 - V7,
+    dV9_V8  = V9 - V8,
+    dV10_V9 = V10 - V9
+  ) %>%
+  select(SUBJID, Variable, dV8_V7, dV9_V8, dV10_V9) %>%
+  pivot_longer(
+    cols = starts_with("dV"),
+    names_to = "Intervalo",
+    values_to = "Delta_indiv"
+  ) %>%
+  drop_na(Delta_indiv)
+
+# 2. MEDIAN of individual change
+deltas_summary_b <- deltas_indiv_b %>%
+  group_by(Variable, Intervalo) %>%
+  summarise(
+    Median_Delta = median(Delta_indiv, na.rm = TRUE),
+    Mean_Delta   = mean(Delta_indiv, na.rm = TRUE),
+    SD_Delta     = sd(Delta_indiv, na.rm = TRUE),
+    n_pairs      = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n_pairs >= 8)
+
+# 3. Matrix for clustering
+deltas_b <- deltas_summary_b %>%
+  select(Variable, Intervalo, Median_Delta) %>%
+  pivot_wider(names_from = Intervalo, values_from = Median_Delta) %>%
+  drop_na()
+
+deltas_matrix_b <- deltas_b %>%
+  column_to_rownames("Variable") %>%
+  as.matrix()
+
+row_sds_b <- apply(deltas_matrix_b, 1, sd, na.rm = TRUE)
+problematic_vars_b <- names(row_sds_b)[row_sds_b == 0 | is.na(row_sds_b)]
+cat("Variables with constant change (or NA) (Group B Mujeres):", length(problematic_vars_b), "\n")
+print(problematic_vars_b)
+
+deltas_clean_b <- deltas_b %>%
+  filter(!Variable %in% problematic_vars_b)
+
+
+deltas_matrix_clean_b <- deltas_clean_b %>%
+  column_to_rownames("Variable") %>%
+  as.matrix()
+
+# 4. Clustering
+diss_deltas_b <- dist(deltas_matrix_clean_b, method = "euclidean")
+
+
+k_range <- 2:15
+sil_scores_b <- numeric(length(k_range))
+
+for (i in seq_along(k_range)) {
+  k <- k_range[i]
+  pam_fit <- pam(diss_deltas_b, k = k, diss = TRUE)
+  sil <- silhouette(pam_fit$clustering, diss_deltas_b)
+  sil_scores_b[i] <- mean(sil[, 3])
+}
+
+optimal_k_b <- k_range[which.max(sil_scores_b)]
+
+sil_df_b <- data.frame(
+  k = k_range,
+  Silhouette_Score = round(sil_scores_b, 3),
+  Optimal = ifelse(k_range == optimal_k_b, "Sí", "")
+)
+
+
+print(sil_df_b)
+
+p_sil_b <- ggplot(sil_df_b, aes(x = k, y = Silhouette_Score)) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_point(data = subset(sil_df_b, Optimal == "Sí"), color = "red", size = 4, shape = 17) +
+  scale_x_continuous(breaks = k_range) +
+  labs(
+    title = "Silhouette Score - Mujeres Biochemical Vars (método robusto)",
+    subtitle = paste("optimal k =", optimal_k_b),
+    x = "Número de clusters (k)",
+    y = "Silhouette medio"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(plot.title = element_text(face = "bold"), plot.subtitle = element_text(color = "gray40")) +
+  geom_text(aes(label = Silhouette_Score), vjust = -1.2, size = 3.5, color = "black")
+
+print(p_sil_b)
+ggsave(file.path(base_dir, "silhouette_scores_robust_group_b_female.png"), p_sil_b, width = 8, height = 5, dpi = 300)
+
+# FINAL CLUSTERING
+optimal_k_b <- 4 
+pam_deltas_b <- pam(diss_deltas_b, k = optimal_k_b, diss = TRUE)
+deltas_clean_b$Cluster <- as.factor(pam_deltas_b$clustering)
+
+# GRAPHICS
+plot_deltas_b <- deltas_clean_b %>%
+  pivot_longer(
+    cols = starts_with("d"),
+    names_to = "Intervalo",
+    values_to = "Cambio"
+  ) %>%
+  mutate(
+    Intervalo = factor(Intervalo, levels = c("dV8_V7", "dV9_V8", "dV10_V9")),
+    Intervalo = recode(Intervalo,
+                       "dV8_V7" = "V8 - V7",
+                       "dV9_V8" = "V9 - V8",
+                       "dV10_V9" = "V10 - V9")
+  )
+
+p_deriv_b <- ggplot(plot_deltas_b, aes(x = Intervalo, y = Cambio, group = Variable, color = Cluster)) +
+  geom_line(alpha = 0.6, size = 0.8) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    title = paste("Patterns of change - Women Biochemical Vars (k =", optimal_k_b, ")"),
+    subtitle = "Median of individual changes",
+    x = "Interval between visits",
+    y = "Medium change (original units)",
+    color = "Cluster"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+print(p_deriv_b)
+ggsave(file.path(base_dir, "derivadas_robustas_por_cluster_group_b_female.png"), p_deriv_b, width = 10, height = 6, dpi = 300)
+
+# FACETED GRAPH
+p_facet_b <- ggplot(plot_deltas_b, aes(x = Intervalo, y = Cambio, group = Variable)) +
+  geom_line(alpha = 0.7, size = 0.9, color = "steelblue") +
+  geom_point(size = 2, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~ Cluster, ncol = 3, labeller = labeller(Cluster = function(x) paste("Cluster", x))) +
+  labs(
+    title = paste("Patterns of change - Women biochemical (k =", optimal_k_b, ")"),
+    subtitle = "Median of individual changes",
+    x = "Interval between visits",
+    y = "Medium change (original units)"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5, color = "gray40"),
+    strip.text = element_text(face = "bold", size = 12),
+    panel.grid.minor = element_blank()
+  )
+
+print(p_facet_b)
+ggsave(file.path(base_dir, "derivadas_robustas_facet_group_b_female.png"), p_facet_b, width = 14, height = 9, dpi = 300)
+
+# TABLE
+tabla_clusters_b <- deltas_clean_b %>%
+  count(Cluster, name = "N_Variables") %>%
+  arrange(desc(N_Variables)) %>%
+  mutate(
+    Porcentaje = round(N_Variables / sum(N_Variables) * 100, 1),
+    Ejemplos = map_chr(Cluster, ~ {
+      vars <- deltas_clean_b %>% filter(Cluster == .x) %>% pull(Variable)
+      paste(head(sort(vars), 3), collapse = ", ")
+    })
+  ) %>%
+  select(Cluster, N_Variables, Porcentaje, Ejemplos)
+
+cat("VARIABLES FOR CLUSTER (Group B Mujeres) \n")
+print(tabla_clusters_b)
+write.table(tabla_clusters_b, file.path(base_dir, "tabla_clusters_robustos_group_b_female.txt"),
+            sep = "\t", row.names = FALSE, quote = FALSE)
+```
+
+## *Subclustering cluster 1 - Biochemical vars Women*
+
+```{r}
+# 1. Extract the variables that are in Cluster 1
+vars_cluster1_b <- deltas_clean_b %>%
+  filter(Cluster == 1) %>%
+  pull(Variable)
+
+cat("Variables en Cluster 1:", length(vars_cluster1_b), "\n")
+cat("Ejemplos:", paste(head(sort(vars_cluster1_b), 8), collapse = ", "), "\n\n")
+
+vars_cluster1_b <- vars_cluster1_b[vars_cluster1_b != "LDL_female"]
+
+# If Cluster 1 is empty or has very few variables, we will notify you.
+if(length(vars_cluster1_b) < 3) {
+  cat("ADVERTENCIA: El Cluster 1 tiene menos de 3 variables → no se hace sub-clustering\n")
+} else {
+
+  # 2. Rebuild the matrix using only those variables
+  deltas_sub_b <- deltas_summary_b %>%
+    filter(Variable %in% vars_cluster1_b) %>%
+    select(Variable, Intervalo, Median_Delta) %>%
+    pivot_wider(names_from = Intervalo, values_from = Median_Delta) %>%
+    drop_na()
+
+  deltas_matrix_sub_b <- deltas_sub_b %>%
+    column_to_rownames("Variable") %>%
+    as.matrix()
+
+  # Remove variables that are now constants within the subgroup
+  row_sds_sub_b <- apply(deltas_matrix_sub_b, 1, sd, na.rm = TRUE)
+  problematic_sub_b <- names(row_sds_sub_b)[row_sds_sub_b == 0 | is.na(row_sds_sub_b)]
+
+  if(length(problematic_sub_b) > 0){
+    cat("Variables eliminadas por varianza 0 en sub-cluster:", problematic_sub_b, "\n")
+    deltas_matrix_sub_b <- deltas_matrix_sub_b[!rownames(deltas_matrix_sub_b) %in% problematic_sub_b, , drop = FALSE]
+  }
+
+  # 3. Distance and search for the best k (silhouette)
+  diss_sub_b <- dist(deltas_matrix_sub_b, method = "euclidean")
+
+  # Reasonable range of k (maximum up to the number of variables - 1)
+  k_range_sub <- 2:15
+  sil_scores_sub_b <- numeric(length(k_range_sub))
+
+  for (i in seq_along(k_range_sub)) {
+    k <- k_range_sub[i]
+    pam_sub <- pam(diss_sub_b, k = k, diss = TRUE)
+    sil <- silhouette(pam_sub$clustering, diss_sub_b)
+    sil_scores_sub_b[i] <- mean(sil[, 3])
+  }
+
+  optimal_k_sub_b <- 3
+
+  cat("k óptimo para sub-clustering del Cluster 1 =", optimal_k_sub_b, "\n\n")
+
+  # silhouette scores Table
+  sil_df_sub_b <- data.frame(
+    k = k_range_sub,
+    Silhouette_Score = round(sil_scores_sub_b, 3),
+    Optimal = ifelse(k_range_sub == optimal_k_sub_b, "Sí", "")
+  )
+  print(sil_df_sub_b)
+
+  # Graph silhouette sub-cluster
+  p_sil_sub_b <- ggplot(sil_df_sub_b, aes(x = k, y = Silhouette_Score)) +
+    geom_line(color = "darkorange", size = 1.2) +
+    geom_point(size = 3.5, color = "darkorange") +
+    geom_point(data = subset(sil_df_sub_b, Optimal == "Sí"), color = "red", size = 5, shape = 17) +
+    scale_x_continuous(breaks = k_range_sub) +
+    labs(
+      title = "Silhouette Score - Sub-clustering Cluster 1 (Bioquímicas Mujeres)",
+      subtitle = paste("k óptimo =", optimal_k_sub_b, "|", nrow(deltas_matrix_sub_b), "variables"),
+      x = "Número de sub-clusters",
+      y = "Silhouette medio"
+    ) +
+    theme_minimal(base_size = 14) +
+    geom_text(aes(label = Silhouette_Score), vjust = -1.3, size = 4)
+
+  print(p_sil_sub_b)
+  ggsave(file.path(base_dir, "silhouette_subcluster1_bioquimicas_female.png"),
+         p_sil_sub_b, width = 9, height = 5.5, dpi = 300)
+
+  # 4. Sub-cluster final Clustering  
+  pam_sub_b <- pam(diss_sub_b, k = optimal_k_sub_b, diss = TRUE)
+  deltas_sub_b$SubCluster <- as.factor(pam_sub_b$clustering)
+
+  # 5. Sub-clustering graphs
+  plot_sub_b <- deltas_sub_b %>%
+    pivot_longer(cols = starts_with("dV"),
+                 names_to = "Intervalo",
+                 values_to = "Cambio") %>%
+    mutate(
+      Intervalo = factor(Intervalo, levels = c("dV8_V7", "dV9_V8", "dV10_V9")),
+      Intervalo = recode(Intervalo,
+                         "dV8_V7" = "V8 - V7",
+                         "dV9_V8" = "V9 - V8",
+                         "dV10_V9" = "V10 - V9")
+    )
+
+  # Colored lines by sub-cluster
+  p_lines_sub_b <- ggplot(plot_sub_b, aes(x = Intervalo, y = Cambio, group = Variable, color = SubCluster)) +
+    geom_line(alpha = 0.7, size = 0.9) +
+    geom_point(size = 2) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+    labs(
+      title = paste("Sub-patrones dentro del Cluster 1 Bioquímicas Mujeres (k =", optimal_k_sub_b, ")"),
+      subtitle = "Mediana de cambios individuales",
+      x = "Intervalo entre visitas",
+      y = "Cambio mediano",
+      color = "Sub-cluster"
+    ) +
+    theme_minimal(base_size = 15) +
+    theme(legend.position = "bottom")
+
+  print(p_lines_sub_b)
+  ggsave(file.path(base_dir, "subcluster1_lines_bioquimicas_female.png"), p_lines_sub_b, width = 11, height = 7, dpi = 300)
+
+  # Sub-cluster faceted
+  p_facet_sub_b <- ggplot(plot_sub_b, aes(x = Intervalo, y = Cambio, group = Variable)) +
+    geom_line(alpha = 0.7, size = 0.9, color = "steelblue") +
+    geom_point(size = 2.2, color = "steelblue") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    facet_wrap(~ SubCluster, ncol = 3,
+               labeller = labeller(SubCluster = function(x) paste("SubCluster", x))) +
+    labs(
+      title = paste("Trayectorias detalladas - Subdivisión Cluster 1 (k =", optimal_k_sub_b, ")"),
+      subtitle = "Mujeres - Variables Bioquímicas"
+    ) +
+    theme_minimal(base_size = 15) +
+    theme(strip.text = element_text(face = "bold", size = 13))
+
+  print(p_facet_sub_b)
+  ggsave(file.path(base_dir, "subcluster1_facet_bioquimicas_female.png"), p_facet_sub_b, width = 14, height = 9, dpi = 300)
+
+  # 6. Summary table of sub-clusters
+  tabla_sub_b <- deltas_sub_b %>%
+    count(SubCluster, name = "N_Variables") %>%
+    arrange(desc(N_Variables)) %>%
+    mutate(
+      Porcentaje = round(N_Variables / sum(N_Variables) * 100, 1),
+      Ejemplos = map_chr(SubCluster, ~{
+        vars <- deltas_sub_b %>% filter(SubCluster == .x) %>% pull(Variable)
+        paste(head(sort(vars), 5), collapse = ", ")
+      })
+    )
+
+  cat("SUB-CLUSTERS WITHIN CLUSTER 1 (Women Biochemical)\n")
+  print(tabla_sub_b)
+  write.table(tabla_sub_b,
+              file.path(base_dir, "tabla_subclusters_cluster1_bioquimicas_female.txt"),
+              sep = "\t", row.names = FALSE, quote = FALSE)
+
+  cat("\nSub-clustering del Cluster 1 completado y guardado.\n")
+}
+```
+
+
+```{r}
+vars_no_change2 <- deltas_sub_b$Variable[deltas_sub_b$SubCluster == 2]
+
+saveRDS(vars_no_change2, "variables_no_cambio_bioquim_female.rds")
+
+```
+
+
+
+# EXPLORATORY ANALYSIS
+## Table with interesting variables
+```{r}
+variables_interes <- "TESTOSTERONE_female"
+
+# Sub-table only with the variable TESTOSTERONE_female
+subtabla_testo <- wide_data_b %>%
+  filter(Variable %in% variables_interes) %>%
+  select(SUBJID, Variable, ID, starts_with("V")) %>%
+  arrange(Variable, SUBJID)
+
+
+# Save
+write.csv(subtabla_testo, 
+          file = file.path(base_dir, "testosterone_female_data.csv"),
+          row.names = FALSE)
+
+cat("Sub-tabla guardada en:", base_dir, "\n")
+
+```
+
+```{r}
+# Filter data for TESTOSTERONE_female
+testo_data <- long_data %>%
+  filter(Variable == "TESTOSTERONE_female")
+
+# Plot: VISIT on x, Value on y, lines and points per SUBJID
+p_testo <- ggplot(testo_data, aes(x = VISIT, y = Value, group = SUBJID)) +
+  geom_line(alpha = 0.5, color = "steelblue") +
+  geom_point(size = 1, alpha = 0.5, color = "steelblue") +
+  labs(
+    title = "Trajectories of TESTOSTERONE_female by Individual",
+    x = "Visit",
+    y = "TESTOSTERONE Value"
+  ) +
+  theme_minimal() +
+  scale_x_continuous(breaks = unique(testo_data$VISIT))
+
+print(p_testo)
+ggsave(file.path(base_dir, "testosterone_trajectories.png"), p_testo, width = 10, height = 6, dpi = 300)
+```
+
+
+```{r}
+# Show the first rows
+print(head(subtabla_test, 10))
+
+# Save
+write.csv(subtabla_test, 
+          file = file.path(base_dir, "Cluster2_data.csv"),
+          row.names = FALSE)
+
+
+cat("Sub-tabla guardada en:", base_dir, "\n")
+```
+

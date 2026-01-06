@@ -1,0 +1,777 @@
+---
+title: "06_PCAs_by_different_vars"
+author: "Adriana Ibáñez"
+date: "2025-12-14"
+output: html_document
+---
+
+
+```{r setup, message=FALSE, warning=FALSE}
+library(ggbiplot)
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(cluster)
+library(circlize)
+library(tibble)
+library(plotly)
+```
+
+# 1. DATA LOADING AND PREPROCESSING
+
+## 1.1 Load base data and define variables to remove
+
+```{r load_data}
+db_female <- readRDS("db_female_final.rds")
+db_male <- readRDS("db_male_final.rds")
+
+# Age variable
+edad_var <- "AGE"
+
+# Vector of variables to remove globally
+vars_to_remove <- c("DEATHAGE", "EVERSMOKE", "HXSMOKE", "PASTALC",
+                    "ALCFREQ", "EX3XWK", "REGEX", "EX_COMP10YRS",
+                    "SLEEPING_HRS", "SITTING_HRS", "NAPPING_HRS")
+```
+
+```{r}
+# Directory to save images
+dir.create("pca_images", showWarnings = FALSE)
+```
+
+
+## 1.2 Process FEMALE data
+
+```{r process_female}
+# Select only numeric variables
+num_vars_f <- db_female %>%
+  dplyr::select(where(is.numeric)) %>%
+  dplyr::select(-all_of(vars_to_remove[vars_to_remove %in% names(.)]))
+
+# Variables with no change (identified in previous analyses)
+vars_to_remove_bioquim_f <- readRDS("variables_no_cambio_bioquim_female.rds")
+vars_to_remove_phys_f <- readRDS("variables_no_cambio_subcluster_physical_female.rds")
+
+# Clean suffixes
+vars_to_remove_bioquim_f <- gsub("_female$", "", vars_to_remove_bioquim_f)
+vars_to_remove_phys_f <- gsub("_female$", "", vars_to_remove_phys_f)
+
+# Filter only existing ones
+vars_to_remove_bioquim_f <- intersect(vars_to_remove_bioquim_f, colnames(num_vars_f))
+vars_to_remove_phys_f <- intersect(vars_to_remove_phys_f, colnames(num_vars_f))
+
+# Load variable groups
+physical_vars_f <- readRDS("group_p_vars_female")
+bioquim_vars_f <- readRDS("group_b_vars_female")
+
+# Clean suffixes
+physical_vars_f <- gsub("_female$", "", physical_vars_f)
+bioquim_vars_f <- gsub("_female$", "", bioquim_vars_f)
+
+# Remove unwanted and no-change variables
+physical_vars_f <- setdiff(physical_vars_f, c(vars_to_remove, vars_to_remove_phys_f, edad_var))
+bioquim_vars_f <- setdiff(bioquim_vars_f, c(vars_to_remove, vars_to_remove_bioquim_f, edad_var))
+
+# Filter only existing variables
+physical_vars_f <- intersect(physical_vars_f, colnames(num_vars_f))
+bioquim_vars_f <- intersect(bioquim_vars_f, colnames(num_vars_f))
+combined_vars_f <- intersect(c(physical_vars_f, bioquim_vars_f), colnames(num_vars_f))
+
+# Create subsets
+data_phys_f <- num_vars_f[, physical_vars_f, drop = FALSE]
+data_bio_f <- num_vars_f[, bioquim_vars_f, drop = FALSE]
+data_comb_f <- num_vars_f[, combined_vars_f, drop = FALSE]
+
+# Document
+cat("\n=== FEMALES ===\n")
+cat("Physical variables:", length(physical_vars_f), "\n")
+cat("Biochemical variables:", length(bioquim_vars_f), "\n")
+cat("Combined variables:", length(combined_vars_f), "\n")
+```
+
+## 1.3 Process MALE data
+
+```{r process_male}
+# Select only numeric variables
+num_vars_m <- db_male %>%
+  dplyr::select(where(is.numeric)) %>%
+  dplyr::select(-all_of(vars_to_remove[vars_to_remove %in% names(.)]))
+
+# Variables with no change (identified in previous analyses)
+vars_to_remove_bioquim_m <- readRDS("variables_no_cambio_subsubcluster1_bioquim_male.rds")
+vars_to_remove_phys_m <- readRDS("variables_no_cambio_subcluster_physical_male.rds")
+
+# Clean suffixes
+vars_to_remove_bioquim_m <- gsub("_male$", "", vars_to_remove_bioquim_m)
+vars_to_remove_phys_m <- gsub("_male$", "", vars_to_remove_phys_m)
+
+# Filter only existing ones
+vars_to_remove_bioquim_m <- intersect(vars_to_remove_bioquim_m, colnames(num_vars_m))
+vars_to_remove_phys_m <- intersect(vars_to_remove_phys_m, colnames(num_vars_m))
+
+# Load variable groups
+physical_vars_m <- readRDS("group_p_vars_male")
+bioquim_vars_m <- readRDS("group_b_vars_male")
+
+# Clean suffixes
+physical_vars_m <- gsub("_male$", "", physical_vars_m)
+bioquim_vars_m <- gsub("_male$", "", bioquim_vars_m)
+
+# Remove unwanted and no-change variables
+physical_vars_m <- setdiff(physical_vars_m, c(vars_to_remove, vars_to_remove_phys_m, edad_var))
+bioquim_vars_m <- setdiff(bioquim_vars_m, c(vars_to_remove, vars_to_remove_bioquim_m, edad_var))
+
+# Filter only existing variables
+physical_vars_m <- intersect(physical_vars_m, colnames(num_vars_m))
+bioquim_vars_m <- intersect(bioquim_vars_m, colnames(num_vars_m))
+combined_vars_m <- intersect(c(physical_vars_m, bioquim_vars_m), colnames(num_vars_m))
+
+# Create subsets
+data_phys_m <- num_vars_m[, physical_vars_m, drop = FALSE]
+data_bio_m <- num_vars_m[, bioquim_vars_m, drop = FALSE]
+data_comb_m <- num_vars_m[, combined_vars_m, drop = FALSE]
+
+# Document
+cat("\n=== MALES ===\n")
+cat("Physical variables:", length(physical_vars_m), "\n")
+cat("Biochemical variables:", length(bioquim_vars_m), "\n")
+cat("Combined variables:", length(combined_vars_m), "\n")
+```
+
+# 2. VISUALIZATION FUNCTIONS
+
+```{r plot_functions}
+# Scree plot function - shows variance explained by each PC
+scree_plot <- function(pca_obj, title, ncp = 15, ylim_max = NULL) {
+  imp <- summary(pca_obj)$importance
+  num_pc <- ncol(imp)
+  ncp <- min(ncp, num_pc)
+  var_exp <- imp[2, 1:ncp] * 100
+  
+  df <- data.frame(
+    PC = factor(paste0("PC", 1:ncp), levels = paste0("PC", 1:ncp)),
+    Variance = var_exp
+  )
+  
+  ggplot(df, aes(x = PC, y = Variance)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    geom_text(aes(label = paste0(round(Variance, 1), "%")),
+              vjust = -0.5, size = 3.5) +
+    labs(title = title,
+         x = "Principal Component",
+         y = "Explained Variance (%)") +
+    theme_minimal(base_size = 14) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    ylim(0, ifelse(is.null(ylim_max), max(var_exp) * 1.15, ylim_max))
+}
+
+# Score plot function without groups - visualizes observations in PC space
+pca_score_plot <- function(pca_obj, pc_x = 1, pc_y = 2, title, subtitle = NULL) {
+  num_pc <- ncol(pca_obj$x)
+  if (pc_y > num_pc) {
+    stop(paste("Only", num_pc, "components available"))
+  }
+  
+  scores <- as.data.frame(pca_obj$x[, c(pc_x, pc_y)])
+  colnames(scores) <- c("PCx", "PCy")
+  var_exp <- summary(pca_obj)$importance[2, c(pc_x, pc_y)] * 100
+  
+  ggplot(scores, aes(x = PCx, y = PCy)) +
+    geom_point(alpha = 0.5, color = "black", size = 1.5) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+    labs(title = title,
+         subtitle = subtitle,
+         x = paste0("PC", pc_x, " (", round(var_exp[1], 1), "% var)"),
+         y = paste0("PC", pc_y, " (", round(var_exp[2], 1), "% var)")) +
+    theme_minimal(base_size = 14)
+}
+
+# Score plot function with groups - adds color coding for different groups
+pca_score_plot_grouped <- function(pca_obj, groups, pc_x = 1, pc_y = 2, 
+                                   title, subtitle = NULL, group_name = "Group") {
+  num_pc <- ncol(pca_obj$x)
+  if (pc_y > num_pc) {
+    stop(paste("Only", num_pc, "components available"))
+  }
+  
+  scores <- as.data.frame(pca_obj$x[, c(pc_x, pc_y)])
+  colnames(scores) <- c("PCx", "PCy")
+  scores$Group <- as.factor(groups)
+  var_exp <- summary(pca_obj)$importance[2, c(pc_x, pc_y)] * 100
+  
+  ggplot(scores, aes(x = PCx, y = PCy, color = Group)) +
+    geom_point(alpha = 0.6, size = 2) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+    labs(title = title,
+         subtitle = subtitle,
+         x = paste0("PC", pc_x, " (", round(var_exp[1], 1), "% var)"),
+         y = paste0("PC", pc_y, " (", round(var_exp[2], 1), "% var)"),
+         color = group_name) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "right")
+}
+
+# Interactive 3D plot function - allows rotation and exploration of 3 PCs
+pca_3d_plot <- function(pca_obj, groups, title, group_name = "Group", 
+                        shapes = NULL, shape_name = NULL) {
+  num_pc <- ncol(pca_obj$x)
+  if (num_pc < 3) {
+    stop("At least 3 principal components are needed for 3D plot")
+  }
+  
+  df <- as.data.frame(pca_obj$x[, 1:3])
+  colnames(df) <- c("PC1", "PC2", "PC3")
+  df$Group <- as.factor(groups)
+  
+  var_exp <- summary(pca_obj)$importance[2, 1:3] * 100
+  
+  p <- plot_ly(df, x = ~PC1, y = ~PC2, z = ~PC3, color = ~Group, 
+               type = "scatter3d", mode = "markers",
+               marker = list(size = 3, opacity = 0.7)) %>%
+    layout(title = title,
+           scene = list(
+             xaxis = list(title = paste0("PC1 (", round(var_exp[1], 1), "%)")),
+             yaxis = list(title = paste0("PC2 (", round(var_exp[2], 1), "%)")),
+             zaxis = list(title = paste0("PC3 (", round(var_exp[3], 1), "%)"))
+           ))
+  
+  if (!is.null(shapes) && !is.null(shape_name)) {
+    df$Shape <- as.factor(shapes)
+    p <- plot_ly(df, x = ~PC1, y = ~PC2, z = ~PC3, 
+                 color = ~Group, symbol = ~Shape,
+                 type = "scatter3d", mode = "markers",
+                 marker = list(size = 3, opacity = 0.7)) %>%
+      layout(title = title,
+             scene = list(
+               xaxis = list(title = paste0("PC1 (", round(var_exp[1], 1), "%)")),
+               yaxis = list(title = paste0("PC2 (", round(var_exp[2], 1), "%)")),
+               zaxis = list(title = paste0("PC3 (", round(var_exp[3], 1), "%)"))
+             ))
+  }
+  
+  return(p)
+}
+
+# Biplot function - shows both observations and variable loadings
+pca_biplot <- function(pca_obj, groups, pc_x = 1, pc_y = 2, 
+                      title, group_name = "Group", var_axes = TRUE) {
+  num_pc <- ncol(pca_obj$x)
+  if (pc_y > num_pc) {
+    stop(paste("Only", num_pc, "components available"))
+  }
+  
+  ggbiplot(pca_obj, 
+           choices = c(pc_x, pc_y),
+           obs.scale = 1, 
+           var.scale = 1,
+           groups = as.factor(groups),
+           ellipse = TRUE,
+           circle = TRUE,
+           var.axes = var_axes,
+           alpha = 0.3) +
+    labs(title = title, color = group_name) +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "right")
+}
+
+# Biplot for separate analysis - without grouping
+pca_biplot_simple <- function(pca_obj, pc_x = 1, pc_y = 2, 
+                             title, var_axes = TRUE) {
+  num_pc <- ncol(pca_obj$x)
+  if (pc_y > num_pc) {
+    stop(paste("Only", num_pc, "components available"))
+  }
+  
+  ggbiplot(pca_obj, 
+           choices = c(pc_x, pc_y),
+           obs.scale = 1, 
+           var.scale = 1,
+           ellipse = FALSE,
+           circle = TRUE,
+           var.axes = var_axes,
+           alpha = 0.5) +
+    labs(title = title) +
+    theme_minimal(base_size = 14)
+}
+```
+
+# 3. PCA ANALYSIS FUNCTIONS
+
+```{r pca_functions}
+# Complete PCA execution function - performs PCA and generates all visualizations
+run_pca_analysis <- function(data, title_prefix, age_groups = NULL, 
+                            save_plots = TRUE, filename_prefix = NULL) {
+  
+  cat("\n")
+  cat(rep("=", 80), "\n", sep = "")
+  cat(paste("   ", toupper(title_prefix)), "\n")
+  cat(rep("=", 80), "\n", sep = "")
+  
+  # Remove rows with missing values
+  data_clean <- na.omit(data)
+  n_removed <- nrow(data) - nrow(data_clean)
+  
+  cat("\nData cleaning:\n")
+  cat("- Original rows:", nrow(data), "\n")
+  cat("- Removed rows:", n_removed, "\n")
+  cat("- Final rows:", nrow(data_clean), "\n")
+  cat("- Variables:", ncol(data_clean), "\n\n")
+  
+  # Scale data (mean=0, sd=1)
+  data_scaled <- scale(data_clean)
+  
+  # Run PCA
+  pca <- prcomp(data_scaled, center = FALSE, scale. = FALSE)
+  
+  # Display results summary
+  cat("\n--- VARIANCE EXPLAINED ---\n")
+  imp <- summary(pca)$importance
+  print(round(imp[, 1:min(10, ncol(imp))], 4))
+  
+  cat("\nCumulative variance of first 3 PCs:", 
+      round(sum(imp[2, 1:3]) * 100, 2), "%\n")
+  
+  # Generate plots
+  plots <- list()
+  
+  # 1. Scree plot
+  plots$scree <- scree_plot(pca, paste(title_prefix, "- Scree Plot"))
+  print(plots$scree)
+  
+  if (save_plots && !is.null(filename_prefix)) {
+    ggsave(paste0("pca_images/", filename_prefix, "_scree.png"), 
+           plots$scree, width = 10, height = 6, dpi = 300)
+  }
+  
+  # 2. Score plots
+  if (!is.null(age_groups) && length(age_groups) == nrow(data_clean)) {
+    # With age groups
+    plots$score_12 <- pca_score_plot_grouped(pca, age_groups, 1, 2,
+                                             paste(title_prefix, "- PC1 vs PC2"),
+                                             group_name = "Age Group")
+    plots$score_13 <- pca_score_plot_grouped(pca, age_groups, 1, 3,
+                                             paste(title_prefix, "- PC1 vs PC3"),
+                                             group_name = "Age Group")
+    plots$score_23 <- pca_score_plot_grouped(pca, age_groups, 2, 3,
+                                             paste(title_prefix, "- PC2 vs PC3"),
+                                             group_name = "Age Group")
+  } else {
+    # Without groups
+    plots$score_12 <- pca_score_plot(pca, 1, 2,
+                                     paste(title_prefix, "- PC1 vs PC2"))
+    plots$score_13 <- pca_score_plot(pca, 1, 3,
+                                     paste(title_prefix, "- PC1 vs PC3"))
+    plots$score_23 <- pca_score_plot(pca, 2, 3,
+                                     paste(title_prefix, "- PC2 vs PC3"))
+  }
+  
+  print(plots$score_12)
+  print(plots$score_13)
+  print(plots$score_23)
+  
+  if (save_plots && !is.null(filename_prefix)) {
+    ggsave(paste0("pca_images/", filename_prefix, "_score_PC1-2.png"), 
+           plots$score_12, width = 8, height = 6, dpi = 300)
+    ggsave(paste0("pca_images/", filename_prefix, "_score_PC1-3.png"), 
+           plots$score_13, width = 8, height = 6, dpi = 300)
+    ggsave(paste0("pca_images/", filename_prefix, "_score_PC2-3.png"), 
+           plots$score_23, width = 8, height = 6, dpi = 300)
+  }
+  
+  # 3. Biplot
+  if (!is.null(age_groups) && length(age_groups) == nrow(data_clean)) {
+    plots$biplot <- pca_biplot(pca, age_groups, 1, 2,
+                               paste(title_prefix, "- Biplot PC1-PC2"),
+                               group_name = "Age Group",
+                               var_axes = FALSE)
+  } else {
+    plots$biplot <- pca_biplot_simple(pca, 1, 2,
+                                      paste(title_prefix, "- Biplot PC1-PC2"),
+                                      var_axes = FALSE)
+  }
+  
+  print(plots$biplot)
+  
+  if (save_plots && !is.null(filename_prefix)) {
+    ggsave(paste0("pca_images/", filename_prefix, "_biplot.png"), 
+           plots$biplot, width = 10, height = 8, dpi = 300)
+  }
+  
+  # Return results
+  result <- list(
+    pca = pca,
+    data_clean = data_clean,
+    data_scaled = data_scaled,
+    plots = plots,
+    n_removed = n_removed
+  )
+  
+  cat("\n", rep("=", 80), "\n", sep = "")
+  cat("✓ Analysis completed\n\n")
+  
+  return(result)
+}
+```
+
+# 4. RUN PCA ANALYSES
+
+## 4.1 PCA - Physical Variables (Females)
+
+```{r pca_physical_female}
+result_phys_f <- run_pca_analysis(
+  data = data_phys_f,
+  title_prefix = "FEMALES - PHYSICAL VARIABLES",
+  age_groups = NULL,
+  save_plots = TRUE,
+  filename_prefix = "female_physical"
+)
+
+pca_phys_f <- result_phys_f$pca
+```
+
+## 4.2 PCA - Physical Variables (Males)
+
+```{r pca_physical_male}
+result_phys_m <- run_pca_analysis(
+  data = data_phys_m,
+  title_prefix = "MALES - PHYSICAL VARIABLES",
+  age_groups = NULL,
+  save_plots = TRUE,
+  filename_prefix = "male_physical"
+)
+
+pca_phys_m <- result_phys_m$pca
+```
+
+## 4.3 PCA - Biochemical Variables (Females)
+
+```{r pca_biochemical_female}
+
+result_bio_f <- run_pca_analysis(
+  data = data_bio_f,
+  title_prefix = "FEMALES - BIOCHEMICAL VARIABLES",
+  age_groups = NULL,
+  save_plots = TRUE,
+  filename_prefix = "female_biochemical"
+)
+
+pca_bio_f <- result_bio_f$pca
+```
+
+## 4.4 PCA - Biochemical Variables (Males)
+
+```{r pca_biochemical_male}
+
+result_bio_m <- run_pca_analysis(
+  data = data_bio_m,
+  title_prefix = "MALES - BIOCHEMICAL VARIABLES",
+  age_groups = NULL,
+  save_plots = TRUE,
+  filename_prefix = "male_biochemical"
+)
+
+pca_bio_m <- result_bio_m$pca
+```
+
+## 4.5 PCA - Combined Variables (Females)
+
+```{r pca_combined_female}
+result_comb_f <- run_pca_analysis(
+  data = data_comb_f,
+  title_prefix = "FEMALES - COMBINED VARIABLES",
+  age_groups = NULL,
+  save_plots = TRUE,
+  filename_prefix = "female_combined"
+)
+
+pca_comb_f <- result_comb_f$pca
+```
+
+## 4.6 PCA - Combined Variables (Males)
+
+```{r pca_combined_male}
+result_comb_m <- run_pca_analysis(
+  data = data_comb_m,
+  title_prefix = "MALES - COMBINED VARIABLES",
+  age_groups = NULL,
+  save_plots = TRUE,
+  filename_prefix = "male_combined"
+)
+
+pca_comb_m <- result_comb_m$pca
+```
+
+# 5. LOADINGS ANALYSIS
+
+## 5.1 Loadings Analysis Functions
+
+```{r loadings_functions}
+# Function to extract and analyze loadings for first 3 PCs
+analyze_loadings <- function(pca_obj, title, n_top = 10) {
+  
+  cat("\n")
+  cat(rep("=", 80), "\n", sep = "")
+  cat(paste("   ", toupper(title)), "\n")
+  cat(rep("=", 80), "\n", sep = "")
+  
+  # Extract loadings (rotation matrix)
+  loadings <- pca_obj$rotation
+  
+  # Focus on first 3 PCs
+  loadings_top3 <- loadings[, 1:min(3, ncol(loadings)), drop = FALSE]
+  
+  # For each PC, show top positive and negative loadings
+  for (pc in 1:ncol(loadings_top3)) {
+    pc_name <- paste0("PC", pc)
+    pc_loadings <- loadings_top3[, pc]
+    
+    cat("\n--- ", pc_name, " ---\n", sep = "")
+    
+    # Top positive loadings
+    top_pos <- sort(pc_loadings, decreasing = TRUE)[1:min(n_top, length(pc_loadings))]
+    cat("\nTop POSITIVE loadings:\n")
+    print(round(top_pos, 4))
+    
+    # Top negative loadings
+    top_neg <- sort(pc_loadings, decreasing = FALSE)[1:min(n_top, length(pc_loadings))]
+    cat("\nTop NEGATIVE loadings:\n")
+    print(round(top_neg, 4))
+    
+    cat("\n")
+  }
+  
+  return(loadings_top3)
+}
+
+# Function to compare loadings by variable groups
+compare_variable_groups <- function(loadings, pc_name = "PC1") {
+  
+  cat("\n")
+  cat(rep("-", 80), "\n", sep = "")
+  cat("LOADINGS COMPARISON BY VARIABLE GROUP -", pc_name, "\n")
+  cat(rep("-", 80), "\n", sep = "")
+  
+  # Get all variable names
+  all_vars <- rownames(loadings)
+  
+  # Define variable groups based on common prefixes/patterns
+  anthro_vars <- grep("^(BMI|WAIST|HIP|WHR|WEIGHT|HEIGHT)", all_vars, value = TRUE)
+  bp_vars <- grep("^(SBP|DBP|PP|MAP|PULSE)", all_vars, value = TRUE)
+  body_comp_vars <- grep("^(FAT|LEAN|MUSCLE|IMPEDANCE|BODY)", all_vars, value = TRUE)
+  cardio_vars <- grep("^(HEART|CARDIAC|EKG|ECG)", all_vars, value = TRUE)
+  lipid_vars <- grep("^(CHOL|HDL|LDL|TRIG|APOA|APOB)", all_vars, value = TRUE)
+  glucose_vars <- grep("^(GLUC|HBA1C|INSULIN|HOMA)", all_vars, value = TRUE)
+  kidney_vars <- grep("^(CREAT|BUN|EGFR|UREA|ALBUMIN.*URINE)", all_vars, value = TRUE)
+  liver_vars <- grep("^(ALT|AST|GGT|ALP|BILI|ALBUMIN[^_])", all_vars, value = TRUE)
+  inflam_vars <- grep("^(CRP|IL|TNF|FIBRIN)", all_vars, value = TRUE)
+  cbc_vars <- grep("^(WBC|RBC|HGB|HCT|PLT|MCV|MCH|LYMPH|NEUTRO|MONO|EOS|BASO)", 
+                   all_vars, value = TRUE)
+  
+  # Variables not in any specific group
+  classified <- c(anthro_vars, bp_vars, body_comp_vars, cardio_vars, 
+                  lipid_vars, glucose_vars, kidney_vars, liver_vars, 
+                  inflam_vars, cbc_vars)
+  other_vars <- setdiff(all_vars, classified)
+  
+  tot_vars <- all_vars
+  
+  # Create groups list
+  groups <- list(
+    "ANTHROPOMETRIC" = anthro_vars,
+    "BLOOD PRESSURE" = bp_vars,
+    "BODY COMPOSITION" = body_comp_vars,
+    "CARDIOVASCULAR" = cardio_vars,
+    "LIPID PROFILE" = lipid_vars,
+    "GLUCOSE METABOLISM" = glucose_vars,
+    "KIDNEY FUNCTION" = kidney_vars,
+    "LIVER FUNCTION" = liver_vars,
+    "INFLAMMATION" = inflam_vars,
+    "COMPLETE BLOOD COUNT" = cbc_vars,
+    "OTHER" = other_vars,
+    "TOTAL" = tot_vars
+  )
+  
+  # Calculate statistics for each group
+  results <- data.frame(
+    Group = character(),
+    N_vars = integer(),
+    Mean_loading = numeric(),
+    SD_loading = numeric(),
+    Min_loading = numeric(),
+    Max_loading = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (group_name in names(groups)) {
+    vars <- groups[[group_name]]
+    if (length(vars) > 0) {
+      vals <- loadings[vars, pc_name]
+      results <- rbind(results, data.frame(
+        Group = group_name,
+        N_vars = length(vars),
+        Mean_loading = mean(vals),
+        SD_loading = sd(vals),
+        Min_loading = min(vals),
+        Max_loading = max(vals)
+      ))
+    }
+  }
+  
+  print(results, row.names = FALSE)
+  cat("\n")
+  
+  return(results)
+}
+
+# Function to create loadings heatmap
+plot_loadings_heatmap <- function(loadings, title, filename = NULL) {
+  
+  library(reshape2)
+  
+  # Prepare data
+  loadings_df <- as.data.frame(loadings)
+  loadings_df$Variable <- rownames(loadings)
+  loadings_long <- melt(loadings_df, id.vars = "Variable", 
+                        variable.name = "PC", value.name = "Loading")
+  
+  # Create heatmap
+  p <- ggplot(loadings_long, aes(x = PC, y = Variable, fill = Loading)) +
+    geom_tile() +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red", 
+                         midpoint = 0, limits = c(-0.25, 0.25)) +
+    labs(title = title, x = "Principal Component", y = "Variable") +
+    theme_minimal(base_size = 10) +
+    theme(axis.text.y = element_text(size = 8),
+          axis.text.x = element_text(size = 10))
+  
+  if (!is.null(filename)) {
+    ggsave(filename, p, width = 8, height = 12, dpi = 300)
+    cat("✓ Heatmap saved:", filename, "\n")
+  }
+  
+  return(p)
+}
+```
+
+## 5.2 Loadings Analysis - Physical Variables
+
+```{r loadings_physical}
+
+# Females - Physical variables
+loadings_f_phys <- analyze_loadings(pca_phys_f, "FEMALES - PHYSICAL VARIABLES")
+
+# Compare by groups
+for (pc in c("PC1", "PC2", "PC3")) {
+  compare_variable_groups(loadings_f_phys, pc)
+}
+
+# Heatmap
+plot_loadings_heatmap(loadings_f_phys, 
+                      "Loadings PC1-PC3 - Females Physical",
+                      "pca_images/loadings_heatmap_women_phys.png")
+
+
+# Males - Physical variables
+loadings_m_phys <- analyze_loadings(pca_phys_m, "MALES - PHYSICAL VARIABLES")
+
+# Compare by groups
+for (pc in c("PC1", "PC2", "PC3")) {
+  compare_variable_groups(loadings_m_phys, pc)
+}
+
+# Heatmap
+plot_loadings_heatmap(loadings_m_phys, 
+                      "Loadings PC1-PC3 - Males Physical",
+                      "pca_images/loadings_heatmap_men_phys.png")
+```
+
+## 5.3 Loadings Analysis - Biochemical Variables
+
+```{r loadings_biochemical}
+# Females - Biochemical variables
+loadings_f_bio <- analyze_loadings(pca_bio_f, "FEMALES - BIOCHEMICAL VARIABLES")
+
+# Compare by groups
+for (pc in c("PC1", "PC2", "PC3")) {
+  compare_variable_groups(loadings_f_bio, pc)
+}
+
+# Heatmap
+plot_loadings_heatmap(loadings_f_bio, 
+                      "Loadings PC1-PC3 - Females Biochemical",
+                      "pca_images/loadings_heatmap_women_bio.png")
+
+
+# Males - Biochemical variables
+loadings_m_bio <- analyze_loadings(pca_bio_m, "MALES - BIOCHEMICAL VARIABLES")
+
+# Compare by groups
+for (pc in c("PC1", "PC2", "PC3")) {
+  compare_variable_groups(loadings_m_bio, pc)
+}
+
+# Heatmap
+plot_loadings_heatmap(loadings_m_bio, 
+                      "Loadings PC1-PC3 - Males Biochemical",
+                      "pca_images/loadings_heatmap_men_bio.png")
+```
+
+# 6. COMPARISON: PHYSICAL vs BIOCHEMICAL
+
+```{r comparison_phys_bio}
+# Summary of explained variance
+comparison_summary <- data.frame(
+  Sex = rep(c("Females", "Males"), each = 2),
+  Variables = rep(c("Physical", "Biochemical"), 2),
+  PC1_var = c(
+    summary(pca_phys_f)$importance[2, 1] * 100,
+    summary(pca_bio_f)$importance[2, 1] * 100,
+    summary(pca_phys_m)$importance[2, 1] * 100,
+    summary(pca_bio_m)$importance[2, 1] * 100
+  ),
+  PC2_var = c(
+    summary(pca_phys_f)$importance[2, 2] * 100,
+    summary(pca_bio_f)$importance[2, 2] * 100,
+    summary(pca_phys_m)$importance[2, 2] * 100,
+    summary(pca_bio_m)$importance[2, 2] * 100
+  ),
+  PC3_var = c(
+    summary(pca_phys_f)$importance[2, 3] * 100,
+    summary(pca_bio_f)$importance[2, 3] * 100,
+    summary(pca_phys_m)$importance[2, 3] * 100,
+    summary(pca_bio_m)$importance[2, 3] * 100
+  )
+)
+
+comparison_summary$Total_PC123 <- rowSums(comparison_summary[, c("PC1_var", "PC2_var", "PC3_var")])
+
+cat("\nEXPLAINED VARIANCE - PHYSICAL vs BIOCHEMICAL:\n")
+cat(rep("=", 80), "\n", sep = "")
+print(comparison_summary, row.names = FALSE)
+
+cat("\n\nINTERPRETATION:\n")
+cat(rep("-", 80), "\n", sep = "")
+cat("- Higher % in PC1 → Greater dominance of a main axis\n")
+cat("- Lower % in PC1 → Greater multidimensionality\n")
+cat("- Compare loadings to see WHAT each PC1 represents\n\n")
+```
+
+# 7. SAVE RESULTS
+
+```{r save_results}
+# Save loadings
+write.csv(loadings_f_phys, "pca_images/loadings_women_phys_PC1-3.csv")
+write.csv(loadings_m_phys, "pca_images/loadings_men_phys_PC1-3.csv")
+write.csv(loadings_f_bio, "pca_images/loadings_women_bio_PC1-3.csv")
+write.csv(loadings_m_bio, "pca_images/loadings_men_bio_PC1-3.csv")
+
+# Save comparison table
+write.csv(comparison_summary, "pca_images/variance_comparison_phys_vs_bio.csv", row.names = FALSE)
+
+cat("\n✓ Loadings analysis completed\n")
+cat("✓ Files saved in: pca_images/\n\n")
+```

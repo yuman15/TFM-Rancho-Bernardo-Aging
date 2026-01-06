@@ -1,0 +1,419 @@
+---
+title: "kruskal_venn_rankings"
+author: "Adriana Ibáñez Gómez"
+date: "2025-11-04"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(GGally)
+library(factoextra)
+library(ggpubr)
+library(cluster)
+library(umap)
+library(dbscan)
+library(purrr)
+library(broom)
+library(VennDiagram)
+library(rstatix)
+library(FSA)
+library(scales)
+library(pheatmap)
+library(grid)
+library(knitr)
+library(kableExtra)
+library(mgcv)
+library(nlme)
+library(corrplot)
+library(tidyverse)
+library(gridExtra)
+library(readxl)   # For reading Excel files
+library(cluster)  # For PAM and silhouette
+library(ggplot2)
+```
+
+## Summary
+In this R script we perform Kruskal-Wallis tests to identify significant differences in numerical variables across different visits. Also we create boxplots to visualize the distribution of these variables by visit and the Venn diagrams to show overlaps in significant variables between groups.
+
+
+## Load data
+
+```{r}
+db_female_final <- readRDS("db_female_final.rds")
+db_male_final <- readRDS("db_male_final.rds")
+db_final_total <- readRDS("db_final_total.rds")
+
+# Check the datasets
+summary(db_final_total)
+vars_num <- names(db_final_total)[!names(db_final_total) %in% c("SUBJID", "SEX", "STATUS", "VISIT")]
+saveRDS(vars_num, file = "vars_num.rds")
+```
+
+
+## Boxplot graphs
+Generate boxplots for each numerical variable by visit, separated by sex and total. Save in PDF and PNG.
+
+```{r}
+# Prepare the dataset for the graphs
+db_plot <- db_final_total %>%
+  filter(VISIT %in% c(7, 8, 9, 10)) %>%
+  mutate(SEX = ifelse(SEX == 0, "Men", "Women"))
+
+# Function to graph a varible
+plot_variable_all <- function(df, var_name) {
+  df_total <- df %>% mutate(SEX = "Total")
+  df_all <- bind_rows(df, df_total)
+  
+  ggplot(df_all, aes(x = factor(VISIT), y = .data[[var_name]], fill = SEX)) +
+    geom_boxplot(outlier.size = 0.5) +
+    labs(title = paste(var_name,"evolution for visit"),
+         x = "Visita", y = var_name, fill = "Grupo") +
+    scale_fill_manual(values = c("Men" = "#1f77b4", "Women" = "#ff7f0e", "Total" = "#2ca02c")) +
+    theme_minimal(base_size = 12)
+}
+```
+
+### Save graphs
+
+```{r, eval=FALSE}
+# Create folders for saving graphs
+dir.create("output/graficas_boxplot_variables_pdf", showWarnings = FALSE, recursive = TRUE)
+dir.create("output/graficas_boxplot_variables_png", showWarnings = FALSE, recursive = TRUE)
+
+# Generate and save graphs
+walk(vars_num, function(v) {
+  p <- plot_variable_all(db_plot, v)
+  ggsave(filename = paste0("output/graficas_boxplot_variables_pdf/", v, ".pdf"), plot = p, width = 7, height = 5)
+  ggsave(filename = paste0("output/graficas_boxplot_variables_png/", v, ".png"), plot = p, width = 7, height = 5)
+})
+```
+
+Boxplots show the range where the central 50% of the data lies. The line inside the box is the median, the "sticks" extend to the non-outliers, and the dots are outliers. A wider box indicates greater dispersion.
+
+
+### Kruskal-wallis test
+Kruskal-wallis is a non-parametric alternative to one-way ANOVA when normality assumptions are not met. Is like an extension of the Mann-Whitney U test for more than two groups. It uses ranges to contrast the distributions of multiple groups.
+
+```{r}
+# Generate a function to calculate Kruskal-Wallis p-values for all numeric variables
+get_pvalues <- function(df) {
+  vars <- df %>% select(where(is.numeric), -c(SUBJID, SEX, STATUS, VISIT)) %>% names()
+  
+  pvals <- map_dbl(vars, function(v) {
+    formula <- as.formula(paste(v, "~ VISIT"))
+    test <- tryCatch(kruskal.test(formula, data = df), error = function(e) NULL)
+    if (!is.null(test)) test$p.value else NA_real_
+  })
+  
+  names(pvals) <- vars
+  return(pvals)
+}
+
+# Apply the function to datasets
+datasets <- list(
+  female_all  = db_female_final,
+  male_all    = db_male_final,
+  total_all   = db_final_total
+)
+
+# Calculate p-values
+pvals <- map(datasets, get_pvalues)
+
+# Bonferroni adjust and create tables
+krusk_results <- imap(pvals, function(pv, name) {
+  tibble(
+    variable = names(pv),
+    p.value  = pv,
+    p.adj    = p.adjust(pv, method = "bonferroni"),
+    dataset  = name
+  )
+})
+
+# Individual acces
+krusk_female_all  <- krusk_results$female_all
+krusk_male_all    <- krusk_results$male_all
+krusk_total_all   <- krusk_results$total_all
+
+# Save results to CSV files
+walk2(krusk_results, names(krusk_results), ~ 
+  write.csv(.x, file = paste0("excels_kruskal/kruskal_", .y, ".csv"), row.names = FALSE))
+
+# Create a file
+dir.create("rds_kruskal_wallis", showWarnings = FALSE)
+
+# Save every object as RDS
+saveRDS(krusk_female_all, file = "rds_kruskal_wallis/krusk_female_all.rds")
+saveRDS(krusk_male_all,   file = "rds_kruskal_wallis/krusk_male_all.rds")
+saveRDS(krusk_total_all,  file = "rds_kruskal_wallis/krusk_total_all.rds")
+
+
+# Show a summary of significant variables
+print("Resumen de variables significativas (p.adj < 0.05):")
+walk2(krusk_results, names(krusk_results), function(df, name) {
+  cat("\nDataset:", name, "\n")
+  print(df %>% filter(p.adj < 0.05) %>% select(variable, p.value, p.adj) %>% head(5))
+})
+
+```
+
+We adjusted for multiple comparisons using the Bonferroni method to control the family-wise error rate and have a more robust significance assessment.
+
+## Kruskal-Wallis heatmap with p.adjusted < 0.05
+
+```{r}
+# Create a set dataframe with p.adj for each group
+signif_df <- krusk_female_all %>%
+  select(variable, p.adj) %>%
+  rename(p.adj_mujeres = p.adj) %>%
+  left_join(krusk_male_all %>% select(variable, p.adj) %>% rename(p.adj_hombres = p.adj), by = "variable") %>%
+  left_join(krusk_total_all %>% select(variable, p.adj) %>% rename(p.adj_total = p.adj), by = "variable") %>%
+  mutate(
+    signif_mujeres = ifelse(p.adj_mujeres < 0.05, 1, 0),
+    signif_hombres = ifelse(p.adj_hombres < 0.05, 1, 0),
+    signif_total = ifelse(p.adj_total < 0.05, 1, 0)
+  ) %>%
+  # Sort by p.adj_total in ascending order (most significant first)
+  arrange(p.adj_total) %>%
+  mutate(variable = factor(variable, levels = variable))
+
+# Long format for heatmap (using binary)
+signif_long <- signif_df %>%
+  select(variable, signif_mujeres, signif_hombres, signif_total) %>%
+  pivot_longer(cols = c(signif_mujeres, signif_hombres, signif_total), names_to = "Grupo", values_to = "Significancia") %>%
+  mutate(Grupo = recode(Grupo, "signif_mujeres" = "Women", "signif_hombres" = "Men", "signif_total" = "Total"))
+
+# Create heatmap
+heatmap_signif <- ggplot(signif_long, aes(x = Grupo, y = variable, fill = as.factor(Significancia))) +
+  geom_tile() +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"), labels = c("No Signification", "Signification")) +
+  labs(
+    title = "K-W Significance heatmap (p.adj < 0.05) for group",
+    x = "Group",
+    y = "Variable",
+    fill = "Significance"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.y = element_text(size = 6),  # Adjust size if many variables
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  geom_text(aes(label = Significancia), color = "white", size = 3)  # Show 0/1 in celdas
+
+# Show heatmaps
+print(heatmap_signif)
+
+# Save
+dir.create("output/heatmaps_signif", showWarnings = FALSE)
+ggsave("output/heatmaps_signif/heatmap_signif_grupos.png", plot = heatmap_signif, width = 8, height = 12)
+ggsave("output/heatmaps_signif/heatmap_signif_grupos.pdf", plot = heatmap_signif, width = 8, height = 12)
+```
+
+```{r}
+# Order of variables based on significance ranking (p.adj) in krusk_total_all
+rank_order <- krusk_total_all %>%
+  arrange(p.adj) %>%
+  pull(variable)
+
+# Create a set dataframe with p.adj for each group
+signif_df <- krusk_female_all %>%
+  select(variable, p.adj) %>%
+  rename(p.adj_mujeres = p.adj) %>%
+  left_join(krusk_male_all %>% select(variable, p.adj) %>% rename(p.adj_hombres = p.adj), by = "variable") %>%
+  left_join(krusk_total_all %>% select(variable, p.adj) %>% rename(p.adj_total = p.adj), by = "variable") %>%
+  # Fill in NA with 1 (not significant by default)
+  mutate(
+    p.adj_mujeres = replace_na(p.adj_mujeres, 1),
+    p.adj_hombres = replace_na(p.adj_hombres, 1),
+    p.adj_total = replace_na(p.adj_total, 1)
+  ) %>%
+  # Set reverse order based on the krusk_total_all ranking
+  mutate(variable = factor(variable, levels = rev(rank_order)))  # Reverse level's order
+
+# Long format for heatmap, adjusting column order
+signif_long <- signif_df %>%
+  select(variable, p.adj_total, p.adj_mujeres, p.adj_hombres) %>%
+  pivot_longer(cols = c(p.adj_total, p.adj_mujeres, p.adj_hombres), names_to = "Grupo", values_to = "p_adj") %>%
+
+mutate(Grupo = recode(Grupo, "p.adj_total" = "Total", "p.adj_mujeres" = "Women", "p.adj_hombres" = "Men")) %>%
+  # Reorder Group levels for Women, Men, Total
+  mutate(Grupo = factor(Grupo, levels = c("Total", "Women", "Men")))
+
+# Add a categorical column for significance
+signif_long$significance <- ifelse(signif_long$p_adj < 0.05, "Significant (p < 0.05)", "Not Significant (p >= 0.05)")
+
+# Heatmap with discret scale
+heatmap_signif_continuous <- ggplot(signif_long, aes(x = Grupo, y = variable, fill = significance)) +
+  geom_tile() +
+  scale_fill_manual(
+    values = c("Significant (p < 0.05)" = "yellow", "Not Significant (p >= 0.05)" = "blue"),
+    name = "Significance Level"  # Legend's name
+  ) +
+  labs(
+    title = "",
+    x = "Group",
+    y = "Variable"
+  ) +  # We removed fill from labs, as it is now handled by scale_fill_manual
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.y = element_text(size = 7),  # Adjust size if there are many variables
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  geom_text(aes(label = sprintf("%.3f", p_adj)), color = "black", size = 2.5)  # Show rounded values
+# Show heatmap
+print(heatmap_signif_continuous)
+
+# Save
+dir.create("output/heatmaps_signif", showWarnings = FALSE, recursive = TRUE)
+ggsave("output/heatmaps_signif/heatmap_signif_continuous_ranked_inverted.png", plot = heatmap_signif_continuous, width = 8, height = 12)
+ggsave("output/heatmaps_signif/heatmap_signif_continuous_ranked_inverted.pdf", plot = heatmap_signif_continuous, width = 8, height = 12)
+```
+
+
+## Kruskal- Comparision Men vs Women
+```{r}
+# Significative variables (p.adj < 0.05)
+sig_female_all <- krusk_female_all %>% filter(p.adj < 0.05) %>% arrange(p.adj) %>% pull(variable)
+sig_male_all <- krusk_male_all %>% filter(p.adj < 0.05) %>% arrange(p.adj) %>% pull(variable)
+
+# Asign ranks
+ranks_mujeres <- tibble(variable = sig_female_all) %>%
+  mutate(rank_mujeres = row_number(), type = "Women")
+
+ranks_hombres <- tibble(variable = sig_male_all) %>%
+  mutate(rank_hombres = row_number(), type = "Men")
+
+# Combine for plotting
+ranks_combined <- bind_rows(
+  ranks_mujeres %>% select(variable, rank = rank_mujeres, type),
+  ranks_hombres %>% select(variable, rank = rank_hombres, type)
+) %>%
+  mutate(is_common = variable %in% intersect(sig_female_all, sig_male_all)) %>%
+  mutate(type = factor(type, levels = c("Women", "Men"))) %>%
+  mutate(color_group = case_when(
+    !is_common ~ "Unique",
+    type == "Women" ~ "Women",
+    type == "Men" ~ "Men"
+  ))
+
+# Chart with colors by group and gray for unique itemss
+ggplot(ranks_combined, aes(x = type, y = rank, group = variable, color = color_group)) +
+  geom_line(alpha = 0.3) +
+  geom_point(size = 2) +
+  geom_text(aes(label = variable, size = is_common), vjust = -0.5) +
+  scale_size_manual(values = c("FALSE" = 2, "TRUE" = 3), guide = "none") +
+  scale_color_manual(values = c("Women" = "coral2", "Men" = "cyan4", "Unique" = "darkgray")) +
+  scale_y_reverse(breaks = seq(1, max(ranks_combined$rank, na.rm = TRUE), by = 5)) +
+  labs(title = "Kruskal-Wallis ranking comparison: Women vs. Men",
+       x = "Grupo",
+       y = "Rank (1 = más significativo)",
+       color = "Grupo / Exclusividad") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Save graph
+dir.create("Rankings", showWarnings = FALSE)
+ggsave("Rankings/ranking_comparison_kruskal_mujeres_hombres_colores_combinados.png", width = 8, height = 12)
+
+```
+
+
+## Make groups of significant variables
+
+```{r}
+# We take the Kruskal < 0.05 and compare between Men and Women
+# Variables significant only for women (excluding those common to men)
+unique_female1 <- setdiff(sig_female_all, sig_male_all)
+
+# Variables significant only for men (excluding those common to women)
+unique_male1 <- setdiff(sig_male_all, sig_female_all)
+
+common_vars1 <- intersect(sig_female_all, sig_male_all)
+
+# Show results
+cat("Variables significativas únicamente para mujeres:", length(unique_female1), "variables:\n")
+cat(paste(unique_female1, collapse = ", "), "\n\n")
+cat("Variables significativas únicamente para hombres:", length(unique_male1), "variables:\n")
+cat(paste(unique_male1, collapse = ", "), "\n")
+
+# Save results as CSV
+dir.create("output", showWarnings = FALSE)
+write.csv(tibble(variable = unique_female1, group = "Women"), "output/unique_signif_women.csv", row.names = FALSE)
+write.csv(tibble(variable = unique_male1, group = "Men"), "output/unique_signif_men.csv", row.names = FALSE)
+```
+
+
+## Venn Diagram Men vs Women
+We visualized the significant variables (p.adj < 0.05) with Venn diagrams. 
+
+```{r}
+# Create a Venn diagram with all significant variables
+venn_plot <- venn.diagram(
+  x = list("Women" = sig_female_all, "Men" = sig_male_all),  # Use all significant variables
+  category.names = c("Women", "Men"),
+  fill = c("coral2", "cyan4"),  # Orange for women, blue for men
+  alpha = 0.6,  # Transparencia
+  label.col = c("black", "black", "black"),  # Counting label colors
+  cex = 1.5,  # Counting label size
+  cat.cex = 1.5,  # Size of category names
+  cat.col = c("black", "black"),  # Color of category namess
+  ext.pos = 0,  # External position of category tags
+  ext.dist = -0.1,  # External distance adjustment
+  main = "Significant Variables: Women vs. Men (p.adj < 0.05)",
+  main.cex = 1.5,
+  filename = NULL  # Do not save directly as a file yet
+)
+
+# Add unique variable labels manually (only exclusive ones)
+grid.newpage()
+grid.draw(venn_plot)
+
+# Save
+ggsave("output/venn/venn_women_men_all.png", plot = grid.grabExpr(grid.draw(venn_plot)), width = 8, height = 8)
+```
+
+
+## Venn Diagram GENERAL
+In this case we compare the three datasets generated: men, women and total.
+
+```{r}
+alpha <- 0.05
+
+sig_female_all <- krusk_female_all %>% filter(p.adj < alpha) %>% pull(variable)
+sig_male_all <- krusk_male_all %>% filter(p.adj < alpha) %>% pull(variable)
+sig_total_all <- krusk_total_all %>% filter(p.adj < alpha) %>% pull(variable)
+
+venn_all <- venn.diagram(
+  x = list(Female = sig_female_all, Male = sig_male_all, Total = sig_total_all),
+  category.names = c("Women", "Men", "Total"),
+  filename = NULL,
+  fill = c("coral2", "cyan4", "darkolivegreen3"),
+  alpha = 0.5,
+  cex = 1.5,
+  cat.cex = 1.2,
+  main = "Significant variables (p.adj < 0.05)"
+)
+grid::grid.newpage()
+grid::grid.draw(venn_all)
+
+# Save
+dir.create("output/venn", showWarnings = FALSE)
+venn.diagram(
+  x = list(Female = sig_female_all, Male = sig_male_all, Total = sig_total_all),
+  category.names = c("Women", "Men", "Total"),
+  filename = "output/venn/venn_all.png",
+  output = TRUE,
+  fill = c("coral2", "cyan4", "darkolivegreen3"),
+  alpha = 0.5,
+  cex = 1.5,
+  cat.cex = 1.2,
+  main = "Significant variables (p.adj < 0.05)"
+)
+
+```

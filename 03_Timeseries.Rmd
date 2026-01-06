@@ -1,0 +1,327 @@
+---
+title: "03_Timeseries"
+author: "Adriana Ibáñez"
+date: "2025-11-05"
+output: pdf_document
+---
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(GGally)
+library(factoextra)
+library(ggpubr)
+library(cluster)
+library(umap)
+library(dbscan)
+library(purrr)
+library(broom)
+library(VennDiagram)
+library(rstatix)
+library(FSA)
+library(scales)
+library(pheatmap)
+library(grid)
+library(knitr)
+library(kableExtra)
+library(mgcv)
+library(nlme)
+library(corrplot)
+library(tidyverse)
+library(gridExtra)
+library(readxl)   # For reading Excel files
+library(cluster)  # For PAM and silhouette
+library(ggplot2)
+library(ggplot2)
+library(dplyr)
+library(irr)
+```
+
+## Summary
+In this R script we are going to perform the Time-Series graphs to visualize the evolution of the variables over the visits with the visualization of the range between the 25th and 75th percentiles as a shaded area around the median line. 
+This type of graph is useful to observe trends and variability in the data over time. To see if the dispersion of the variables change along the timepoints. Variables that change their dispersion/ range could be of interest for further analysis.
+
+#### Option 1: more disperse to less disperse
+This would mean that along the timepoints, the variable is getting normalized.
+
+#### Option 2: less disperse to more disperse
+This would mean that along the timepoints, the variable is getting more variable, which could indicate that with aging, the variable is getting more heterogeneous (more prone to make clusters among them).
+
+## Data importation
+### General data
+
+```{r}
+# Data importation
+db_female_final <- readRDS("db_female_final.rds")
+db_male_final <- readRDS("db_male_final.rds")
+db_final_total <- readRDS("db_final_total.rds")
+
+vars_num <- readRDS("vars_num.rds")
+
+```
+
+
+```{r}
+length(unique(db_female_final$SUBJID))
+```
+
+
+
+### "Secundary" variable data importation
+
+```{r}
+OnlyK_total   <- read.csv("R_files/OnlyK_total.csv")$variable
+OnlyK_female <- read.csv("R_files/OnlyK_female.csv")$variable
+OnlyK_male   <- read.csv("R_files/OnlyK_male.csv")$variable
+vars_to_plot  <- read.csv("R_files/vars_to_plot.csv")$variable
+```
+
+
+## Time-series graphs
+### Funnel or trend charts with Kruskal sign variables but NO sign slope / Time series charts of variables ONLY KRUSKAL from the TOTAL dataset
+```{r}
+# Function for creating a time series graph with image style
+plot_time_series_interval <- function(var_name, df, group_name) {
+  data_summary <- df %>%
+    filter(!is.na(.data[[var_name]])) %>%
+    group_by(VISIT) %>%
+    summarise(
+      mediana = median(.data[[var_name]], na.rm = TRUE),
+      lower = quantile(.data[[var_name]], 0.25, na.rm = TRUE),
+      upper = quantile(.data[[var_name]], 0.75, na.rm = TRUE),
+      n = n(),
+      .groups = 'drop'
+    ) %>%
+    filter(n > 0)
+  
+  # Base graphic with image style
+  p <- ggplot(data_summary, aes(x = VISIT, y = mediana, group = 1)) + # group = 1 para conectar
+    geom_ribbon(aes(ymin = lower, ymax = upper, group = 1), alpha = 0.3, fill = "gray") + # Gray band
+    geom_line(color = "blue", size = 1) + # Blue line
+    geom_point(color = "blue", shape = 3, size = 2) + # Dots '+'
+    labs(title = paste(var_name),
+         x = "Visit", y = var_name) +
+    theme_minimal(base_size = 12) +
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  p
+}
+
+# Generate and save
+dir.create("output/time_series_only_total", showWarnings = FALSE, recursive = TRUE)
+walk(OnlyK_total, function(v) {
+  p <- plot_time_series_interval(v, db_final_total, "Total")
+  if (!is.null(p)) {
+    print(p)
+    ggsave(paste0("output/time_series_only_total/png/", v, ".png"), p, width = 8, height = 6)
+    ggsave(paste0("output/time_series_only_total/pdf/", v, ".pdf"), p, width = 8, height = 6)
+  }
+})
+```
+
+
+### Time series graphs for variables significant for Only Kruskal in Women
+```{r}
+# Generate and save for women
+dir.create("output/time_series_onlyK_women", showWarnings = FALSE, recursive = TRUE)
+walk(OnlyK_female, function(v) {
+  p <- plot_time_series_interval(v, db_female_final, "Women")
+  if (!is.null(p)) {
+    print(p)
+    ggsave(paste0("output/time_series_onlyK_women/png/", v, ".png"), p, width = 8, height = 6)
+    ggsave(paste0("output/time_series_onlyK_women/pdf/", v, ".pdf"), p, width = 8, height = 6)
+  }
+})
+
+```
+
+### Time series graphs for variables significant for Only Kruskal in Men
+```{r}
+# Generate and save for men
+dir.create("output/time_series_onlyK_Men", showWarnings = FALSE, recursive = TRUE)
+walk(OnlyK_male, function(v) {
+  p <- plot_time_series_interval(v, db_male_final, "Men")
+  if (!is.null(p)) {
+    print(p)
+    ggsave(paste0("output/time_series_onlyK_men/png/", v, ".png"), p, width = 8, height = 6)
+    ggsave(paste0("output/time_series_onlyK_men/pdf/", v, ".pdf"), p, width = 8, height = 6)
+  }
+})
+```
+
+## Combined funnel charts for men and women on a single slide
+### For all variables
+```{r}
+
+for (v in vars_to_plot) {
+  # Compute summary for women
+  data_summary_women <- db_female_final %>%
+    group_by(VISIT) %>%
+    summarise(
+      mediana = median(.data[[v]], na.rm = TRUE),
+      lower = quantile(.data[[v]], 0.25, na.rm = TRUE),
+      upper = quantile(.data[[v]], 0.75, na.rm = TRUE)
+    ) %>%
+    mutate(group = "Women")
+  
+  # Compute summary for men
+  data_summary_men <- db_male_final %>%
+    group_by(VISIT) %>%
+    summarise(
+      mediana = median(.data[[v]], na.rm = TRUE),
+      lower = quantile(.data[[v]], 0.25, na.rm = TRUE),
+      upper = quantile(.data[[v]], 0.75, na.rm = TRUE)
+    ) %>%
+    mutate(group = "Men")
+  
+  # Combine summaries
+  data_summary_combined <- bind_rows(data_summary_women, data_summary_men)
+  
+  # Create overlapped plot
+  combined_plot <- ggplot(data_summary_combined, aes(x = VISIT, y = mediana, group = group, color = group, fill = group)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.3) +  # Semi-transparent ribbons for ranges
+    geom_line(size = 1) +  # Lines for medians
+    geom_point(shape = 3, size = 2) +  # Points for medians
+    scale_color_manual(values = c("Men" = "blue", "Women" = "red")) +  # Darker colors for lines/points
+    scale_fill_manual(values = c("Men" = "lightblue", "Women" = "pink")) +  # Lighter fills for ribbons
+    labs(title = paste("Comparative", v), x = "Visit", y = v) +
+    theme_minimal(base_size = 12) +
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  # Save as PNG and PDF
+  ggsave(paste0("output/time_series_combined/png/", v, "_combined.png"), combined_plot, width = 8, height = 6)  # Adjusted width for single plot
+  ggsave(paste0("output/time_series_combined/pdf/", v, "_combined.pdf"), combined_plot, width = 8, height = 6)
+}
+
+#Here we plot all the variables that are significant for Kruskal but not for slopes, for both men and women, so from all these plots we have to look at and decide whether to include these variables or not.
+
+```
+
+
+
+## *Symetrical variables*
+### t-test y plot
+
+```{r}
+perform_t_test_and_plot <- function(var1, var2, df) {
+  data1 <- df[[var1]]
+  data2 <- df[[var2]]
+  complete_cases <- complete.cases(data1, data2)
+  data1 <- data1[complete_cases]
+  data2 <- data2[complete_cases]
+  
+  if (length(data1) < 2 || length(data2) < 2) {
+    cat(sprintf("WARNING: Too few for %s vs %s\n\n", var1, var2))
+    return(NULL)
+  }
+  
+  t_test_result <- t.test(data1, data2, paired = FALSE)
+  mean1 <- mean(data1); mean2 <- mean(data2)
+  diff_abs <- mean1 - mean2; diff_pct <- 100 * diff_abs / mean2
+  global_mean <- mean(c(data1, data2))
+  
+  cat(sprintf("t-test for %s vs %s:\n", var1, var2))
+  cat(sprintf(" Average %s: %.2f\n", var1, mean1))
+  cat(sprintf(" Average %s: %.2f\n", var2, mean2))
+  cat(sprintf(" Diference: %.2f (%.2f%%)\n", diff_abs, diff_pct))
+  cat(sprintf(" p-value: %.4f\n\n", t_test_result$p.value))
+  
+  plot_data <- data.frame(
+    value = c(data1, data2),
+    variable = factor(rep(c(var1, var2), c(length(data1), length(data2))))
+  )
+  
+  p <- ggplot(plot_data, aes(x = variable, y = value, fill = variable)) +
+    geom_boxplot(alpha = 0.7, width = 0.5) +
+    geom_jitter(width = 0.15, alpha = 0.7, size = 1.8, shape = 21, color = "black") +
+    stat_summary(fun = mean, geom = "point", shape = 23, size = 4, fill = "white", stroke = 1.2) +
+    stat_summary(fun.data = "mean_cl_normal", geom = "errorbar", width = 0.2, size = 0.8, color = "black") +
+    geom_hline(yintercept = global_mean, linetype = "dashed", color = "black", size = 0.8) +
+    annotate("text", x = 1, y = global_mean, label = "Media global", vjust = -0.5, hjust = 0, size = 3.2, color = "black", fontface = "italic") +
+    labs(title = sprintf("%s vs %s", var1, var2), x = "Group", y = "Value") +
+    theme_minimal(base_size = 12) +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"), legend.position = "none") +
+    scale_fill_manual(values = c("#FF6B6B", "#4ECDC4")) +
+    annotate("text", x = 1.5, y = max(plot_data$value, na.rm = TRUE) * 1.05,
+             label = sprintf("p = %.4f", t_test_result$p.value),
+             size = 4, fontface = "bold",
+             color = ifelse(t_test_result$p.value < 0.05, "red", "gray30"))
+  p
+}
+
+pairs <- list(
+  c("RA_FAT", "LA_FAT"), c("RA_LEAN", "LA_LEAN"), c("RA_BMC", "LA_BMC"), c("RA_LBMC", "LA_LBMC"),
+  c("RL_FAT", "LL_FAT"), c("RL_LEAN", "LL_LEAN"), c("RL_BMC", "LL_BMC"), c("RL_LBMC", "LL_LBMC"),
+  c("TOT_LEAN", "SUBT_LEAN"), c("TOT_FAT", "SUBT_FAT"), c("TOT_PCN", "SUBT_PCN")
+)
+
+dir.create("output/t_test_plots_symetrical", showWarnings = FALSE, recursive = TRUE)
+for (pair in pairs) {
+  var1 <- pair[1]; var2 <- pair[2]
+  p <- perform_t_test_and_plot(var1, var2, db_final_total)
+  if (!is.null(p)) {
+    print(p)
+    ggsave(paste0("output/t_test_plots_symetrical/", var1, "_vs_", var2, ".png"), p, width = 8, height = 6, dpi = 300)
+    ggsave(paste0("output/t_test_plots_symetrical/", var1, "_vs_", var2, ".pdf"), p, width = 8, height = 6)
+  }
+}
+```
+
+Since we see that some measurements of Right Leg vs Left Leg are not significant, we compare between sexes to see if that is where the problem comes from.
+
+## Separate by gender
+### Symetrical variables in *women*
+
+```{r}
+# Apply to the variables needed
+pairs <- list(
+  c("RA_FAT", "LA_FAT"), c("RA_LEAN", "LA_LEAN"), c("RA_BMC", "LA_BMC"), c("RA_LBMC", "LA_LBMC"),
+  c("RL_FAT", "LL_FAT"),
+  c("TOT_LEAN", "SUBT_LEAN"), c("TOT_FAT", "SUBT_FAT"), c("TOT_PCN", "SUBT_PCN")
+)
+
+# Generate and save results
+dir.create("output/t_test_plots_symetrical_women", showWarnings = FALSE, recursive = TRUE)
+for (pair in pairs) {
+  var1 <- pair[1]
+  var2 <- pair[2]
+  p <- perform_t_test_and_plot(var1, var2, db_female_final)
+  if (!is.null(p)) {
+    print(p)
+    
+    # Save the graph
+    ggsave(filename = paste0("output/t_test_plots_symetrical_women/", var1, "_vs_", var2, ".png"),
+           plot = p, width = 8, height = 6, dpi = 300)
+  }
+}
+  
+```
+
+### Symetrical variables in *men*
+```{r}
+# Apply to the variables needed
+pairs <- list(
+  c("RA_FAT", "LA_FAT"), c("RA_LEAN", "LA_LEAN"), c("RA_BMC", "LA_BMC"), c("RA_LBMC", "LA_LBMC"),
+  c("RL_FAT", "LL_FAT"),
+  c("TOT_LEAN", "SUBT_LEAN"), c("TOT_FAT", "SUBT_FAT"), c("TOT_PCN", "SUBT_PCN")
+)
+
+# Generate and save results
+dir.create("output/t_test_plots_symetrical_men", showWarnings = FALSE, recursive = TRUE)
+for (pair in pairs) {
+  var1 <- pair[1]
+  var2 <- pair[2]
+  p <- perform_t_test_and_plot(var1, var2, db_male_final)
+  if (!is.null(p)) {
+    print(p)
+    
+    # Guardar el gráfico
+    ggsave(filename = paste0("output/t_test_plots_symetrical_men/", var1, "_vs_", var2, ".png"),
+           plot = p, width = 8, height = 6, dpi = 300)
+  }
+}
+```
+
+
+

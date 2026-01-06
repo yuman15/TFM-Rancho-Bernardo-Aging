@@ -1,0 +1,510 @@
+---
+title: "02_slopes_and_interactions"
+author: "Adriana Ibáñez Gómez"
+date: "2025-11-04"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(GGally)
+library(factoextra)
+library(ggpubr)
+library(cluster)
+library(umap)
+library(dbscan)
+library(purrr)
+library(broom)
+library(VennDiagram)
+library(rstatix)
+library(FSA)
+library(scales)
+library(pheatmap)
+library(grid)
+library(knitr)
+library(kableExtra)
+library(mgcv)
+library(nlme)
+library(corrplot)
+library(tidyverse)
+library(gridExtra)
+library(readxl)   # For reading Excel files
+library(cluster)  # For PAM and silhouette
+library(ggplot2)
+```
+
+
+## Summary
+In this R script, we perform several analyses on datasets divided by sex. We calculate the slopes of numerical variables over time (VISIT) for each subject and generate summaries. We create heatmaps to visualize these slopes normalized by the range (max-min) of each variable. Additionally, we compare these slopes with previously computed Kruskal-Wallis test results to identify variables that show significant changes over time. Finally, we generate scatter plots to visualize the relationship between the significance from the Kruskal-Wallis tests and the magnitude of change indicated by the slopes. 
+
+
+## Data loading
+### General data
+
+```{r}
+# Data loading
+db_female_final <- readRDS("db_female_final.rds")
+db_male_final <- readRDS("db_male_final.rds")
+db_final_total <- readRDS("db_final_total.rds")
+
+vars_num <- readRDS("vars_num.rds")
+```
+
+
+## LINEAR FITTING
+
+Linear fitting is try to match the data to a straight line using the least squares method. In this case, we are interested in the slope of the line, which indicates the rate of change of the variable over time (VISIT). A positive slope indicates an increasing trend, while a negative slope indicates a decreasing trend.
+
+### Creating the slopes and normalize by Max-Min
+```{r}
+# Function to calculate global slope and normalize by range (max - min)
+get_normalized_slopes_by_range <- function(df) {
+  vars_num <- names(df)[!names(df) %in% c("SUBJID", "SEX", "STATUS", "VISIT")]
+  
+  # Calculate global slopes and range
+  global_slopes <- map_dfr(vars_num, function(v) {
+    # Calcular min y max de la variable
+    min_val <- min(df[[v]], na.rm = TRUE)
+    max_val <- max(df[[v]], na.rm = TRUE)
+    range_var <- max_val - min_val
+    
+    # Fit linear model
+    model <- tryCatch(
+      lm(as.formula(paste(v, "~ VISIT")), data = df),
+      error = function(e) NULL
+    )
+    
+    # Extract global slope
+    slope <- if (!is.null(model)) coef(model)[2] else NA_real_
+    
+    # Normalize: slope / range (if range=0, NA)
+    normalized_slope <- if (!is.na(slope) & range_var != 0) slope / range_var else NA_real_
+    
+    tibble(variable = v, global_slope = slope, normalized_slope = normalized_slope, range_variable = range_var)
+  })
+  
+  return(global_slopes)
+}
+
+# Apply the function to each dataset/group
+slopes_male <- get_normalized_slopes_by_range(db_male_final)
+slopes_female <- get_normalized_slopes_by_range(db_female_final)
+slopes_total <- get_normalized_slopes_by_range(db_final_total)
+
+# Show tables
+knitr::kable(slopes_male, caption = "Pendientes Globales y Normalizadas (por Rango) - Hombres")
+knitr::kable(slopes_female, caption = "Pendientes Globales y Normalizadas (por Rango) - Mujeres")
+knitr::kable(slopes_total, caption = "Pendientes Globales y Normalizadas (por Rango) - Total")
+
+# Save as CSV
+dir.create("output", showWarnings = FALSE, recursive = TRUE)
+write.csv(slopes_male, "output/slopes_normalized_by_range_male.csv", row.names = FALSE)
+write.csv(slopes_female, "output/slopes_normalized_by_range_female.csv", row.names = FALSE)
+write.csv(slopes_total, "output/slopes_normalized_by_range_total.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+# Combine the tables using normalized_slope
+slopes_combined <- slopes_male %>%
+  rename(Male = normalized_slope) %>%
+  left_join(slopes_female %>% rename(Female = normalized_slope), by = "variable") %>%
+  left_join(slopes_total %>% rename(Total = normalized_slope), by = "variable") %>%
+  mutate(
+    Male = replace_na(Male, 0),
+    Female = replace_na(Female, 0),
+    Total = replace_na(Total, 0)
+  )
+
+# Convert to long format
+slopes_long <- slopes_combined %>%
+  pivot_longer(cols = c(Male, Female, Total), names_to = "Group", values_to = "NormalizedSlope")
+
+# Calculate limits for symmetrical scaling
+lim <- max(abs(slopes_long$NormalizedSlope), na.rm = TRUE)
+
+# Create heatmap with normalized slopes
+heatmap_slopes <- ggplot(slopes_long, aes(x = Group, y = variable, fill = NormalizedSlope)) +
+  geom_tile() +
+  scale_fill_gradientn(
+    colours = c("darkblue", "cyan", "white", "coral", "darkred"),
+    values = scales::rescale(c(-lim, -0.05, 0, 0.05, lim), from = c(-lim, lim)),
+    limits = c(-lim, lim),
+    name = "Normalized slope"
+  ) +
+  labs(
+    title = "Slope/Linear Regresion heatmap (normalized by Max-Min)",
+    x = "Group",
+    y = "Variable"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.y = element_text(size = 6),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  geom_text(aes(label = round(NormalizedSlope, 2)), color = "black", size = 0.7)
+# Show the graph
+print(heatmap_slopes)
+
+# Save heatmap
+ggsave("output/heatmap_slopes_normalized_by_maxmin_combined.png", plot = heatmap_slopes, width = 8, height = 12)
+ggsave("output/heatmap_slopes_normalized_by_maxmin_combined.pdf", plot = heatmap_slopes, width = 8, height = 12)
+```
+
+## Load Kruskal-Wallis results 
+```{r}
+# Load previously saved Kruskal-Wallis results
+krusk_female_all <- readRDS("rds_kruskal_wallis/krusk_female_all.rds")
+krusk_male_all   <- readRDS("rds_kruskal_wallis/krusk_male_all.rds")
+krusk_total_all  <- readRDS("rds_kruskal_wallis/krusk_total_all.rds")
+
+# Fast check
+str(krusk_total_all)
+```
+
+## Heatmap of slopes *reordered* by Kruskal-Wallis significance (to compare them)
+```{r}
+# Order of variables based on significance ranking (p.adj) in krusk_total_all
+rank_order <- krusk_total_all %>%
+  arrange(p.adj) %>%
+  pull(variable)
+
+# Combine the slope tables
+slopes_combined <- slopes_male %>%
+  rename(Male = normalized_slope) %>%
+  left_join(slopes_female %>% rename(Female = normalized_slope), by = "variable") %>%
+  left_join(slopes_total %>% rename(Total = normalized_slope), by = "variable") %>%
+  mutate(
+    Male = replace_na(Male, 0),
+    Female = replace_na(Female, 0),
+    Total = replace_na(Total, 0)
+  ) %>%
+  # Set reverse order based on the krusk_total_all ranking
+  mutate(variable = factor(variable, levels = rev(rank_order)))
+
+# Convert to long format
+slopes_long <- slopes_combined %>%
+  pivot_longer(cols = c(Male, Female, Total), names_to = "Group", values_to = "NormalizedSlope") %>%
+  mutate(Group = factor(Group, levels = c("Female", "Male", "Total")))
+
+# Calculate limits for symmetrical scaling
+lim <- max(abs(slopes_long$NormalizedSlope), na.rm = TRUE)
+
+# Create heatmap
+heatmap_slopes <- ggplot(slopes_long, aes(x = Group, y = variable, fill = NormalizedSlope)) +
+  geom_tile() +
+  scale_fill_gradientn(
+    colours = c("darkblue", "lightblue", "white", "pink", "darkred"),
+    values = scales::rescale(c(-lim, -0.05, 0, 0.05, lim), from = c(-lim, lim)),
+    limits = c(-lim, lim),
+    name = "Normalized slope"
+  ) +
+  labs(
+    title = "",
+    x = "Group",
+    y = "Variable"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.y = element_text(size = 7),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  geom_text(aes(label = round(NormalizedSlope, 2)), color = "black", size = 2.5)
+# Show the graph
+print(heatmap_slopes)
+
+# Save heatmap
+ggsave("output/heatmap_slopes_normalized_combined_reordered_inverted.png", plot = heatmap_slopes, width = 8, height = 12)
+ggsave("output/heatmap_slopes_normalized_combined_reordered_inverted.pdf", plot = heatmap_slopes, width = 8, height = 12)
+```
+
+
+## Graficas donde se puede ver la tendencia de distribución a lo largo de los años
+
+```{r, eval=FALSE}
+# Function to generate a scatter plot with a regression line for a variable
+plot_variable_with_fit <- function(df, var_name, group_name = "Total") {
+  p <- ggplot(df, aes(x = VISIT, y = .data[[var_name]])) +
+    geom_point(alpha = 0.5, size = 1, color = "orange") +  # Nube de puntos
+    geom_smooth(method = "lm", se = TRUE, color = "red", fill = "lightgray") +  # Regression line with confidence interval
+    labs(
+      title = paste("Nube de Puntos y Línea de Regresión para", var_name, "(", group_name, ")"),
+      x = "Visita",
+      y = var_name
+    ) +
+    theme_minimal(base_size = 12)
+  return(p)
+}
+
+# Numerical variables (excluding non-numeric variables)
+vars_num <- names(db_final_total)[!names(db_final_total) %in% c("SUBJID", "SEX", "STATUS")]
+vars_num_f <- names(db_female_final)[!names(db_female_final) %in% c("SUBJID", "SEX", "STATUS")]
+vars_num_m <- names(db_male_final)[!names(db_male_final) %in% c("SUBJID", "SEX", "STATUS")]
+
+# Create a folder to save graphics
+dir.create("linear_fitting_graphs", showWarnings = FALSE, recursive = TRUE)
+subfolders <- c("total", "male", "female", "total_no11", "male_no11", "female_no11")
+for (subfolder in subfolders) {
+  dir.create(file.path("linear_fitting_graphs", subfolder), showWarnings = FALSE, recursive = TRUE)
+}
+
+# Generate and save charts for each group
+ for (v in vars_num) {
+p_total <- plot_variable_with_fit(db_final_total, v, "Total")
+ggsave(filename = file.path("linear_fitting_graphs", "total", paste0(v, "_total.png")), plot = p_total, width = 8, height = 6)
+ }
+ 
+ for (v in vars_num_m) {
+p_male <- plot_variable_with_fit(db_male_final, v, "Hombres")
+ggsave(filename = file.path("linear_fitting_graphs", "male", paste0(v, "_hombres.png")), plot = p_male, width = 8, height = 6)
+ }
+
+ for (v in vars_num_f) {
+p_female <- plot_variable_with_fit(db_female_final, v, "Mujeres")
+ggsave(filename = file.path("linear_fitting_graphs", "female", paste0(v, "_mujeres.png")), plot = p_female, width = 8, height = 6)
+}
+```
+
+```{r}
+range (slopes_male$normalized_slope)
+range(slopes_female$normalized_slope, na.rm = TRUE)
+range (slopes_total$normalized_slope)
+```
+But in the dataset for women, variables exclusive to men, such as TESTOSTERONE, appear as NA...
+
+#### Add column with absolute slope valors and sort by them
+
+```{r}
+slopes_male <- slopes_male %>%  
+  mutate(abs_normalized_slope = abs(normalized_slope)) %>%  
+  arrange(desc(abs_normalized_slope))
+
+slopes_female <- slopes_female %>%  
+  mutate(abs_normalized_slope = abs(normalized_slope)) %>%  
+  arrange(desc(abs_normalized_slope)) 
+
+slopes_total <- slopes_total %>%  
+  mutate(abs_normalized_slope = abs(normalized_slope)) %>% 
+  arrange(desc(abs_normalized_slope)) 
+```
+
+## Different tables obtained 
+
+```{r}
+knitr::kable(slopes_male, caption = "Men variables sorted by (absolute) slope [descendent] ")
+```
+
+```{r}
+knitr::kable(slopes_female, caption = "Women variables sorted by (absolute) slope [descendent] ")
+```
+
+```{r}
+knitr::kable(slopes_total, caption = "Total dataset variables sorted by (absolute) slope [descendent] ")
+```
+
+## Coincidences SLOPE & Kruskal
+### We compare those that are doubly significant between SEXES
+```{r}
+# Filter variables on slopes_total with abs_normalized_slope > 0.01
+slopes_total_only_sig <- slopes_total %>%
+  filter(abs_normalized_slope > 0.01)
+
+slopes_female_only_sig <- slopes_female %>%
+  filter(abs_normalized_slope > 0.01)
+
+slopes_male_only_sig <- slopes_male %>%
+  filter(abs_normalized_slope > 0.01)
+
+# Filter variables in krusk_total_all with p.adj < 0.05
+krusk_total_sig <- krusk_total_all %>%
+  filter(p.adj < 0.05)
+
+krusk_female_sig <- krusk_female_all %>%
+  filter(p.adj < 0.05)
+
+krusk_male_sig <- krusk_male_all %>%
+  filter(p.adj < 0.05)
+
+```
+
+```{r}
+# Finding matching variables between Kruskal-Wallis significant results and Slopes significant results
+# Coincidences: TOTAL dataset
+common_total <- intersect(krusk_total_sig$variable, slopes_total_only_sig$variable)
+cat("Matching variables between krusk_total_sig and slopes_total_only_sig:\n", common_total, "\n\n")
+
+# Coincidences: WOMEN dataset
+common_female <- intersect(krusk_female_sig$variable, slopes_female_only_sig$variable)
+cat("Matching variables between krusk_female_sig and slopes_female_only_sig:\n", common_female, "\n\n")
+
+# Coincidences: MEN dataset
+common_male <- intersect(krusk_male_sig$variable, slopes_male_only_sig$variable)
+cat("Matching variables between krusk_male_sig and slopes_male_only_sig:\n", common_male, "\n\n")
+
+# Exclusive variables of krusk_total_sig
+exclusive_total <- setdiff(krusk_total_sig$variable, slopes_total_only_sig$variable)
+cat("Exclusive variables of krusk_total_sig (not in slopes_total_only_sig):\n", exclusive_total, "\n")
+
+exclusive_female <- setdiff(krusk_female_sig$variable, slopes_female_only_sig$variable)
+cat("Exclusive variables of krusk_total_sig (not in slopes_total_only_sig):\n", exclusive_total, "\n")
+
+exclusive_male <- setdiff(krusk_male_sig$variable, slopes_male_only_sig$variable)
+cat("Exclusive variables of krusk_total_sig (not in slopes_total_only_sig):\n", exclusive_total, "\n")
+
+```
+
+# In general
+```{r}
+# Select relevant data from both datasets for common variables
+slopes_data <- slopes_total_only_sig %>%
+  filter(variable %in% common_total) %>%
+  arrange(desc(abs_normalized_slope))
+
+krusk_data <- krusk_total_sig %>%
+  filter(variable %in% common_total) %>%
+  arrange(p.adj)
+
+# Combine data into a single dataframe for the chart
+combined_data_all <- krusk_data %>%
+  select(variable, p.adj) %>%
+  left_join(slopes_data %>% select(variable, abs_normalized_slope), by = "variable")
+
+# Show results table
+print(combined_data_all)
+
+```
+
+## Variables Only Kruskal-Wallis (OnlyK)
+
+Here we will generate the lists of variables that are only significant in the Kruskal-Wallis test but not in the slope analysis, for each dataset.
+
+```{r}
+OnlyK_total <- setdiff(krusk_total_sig$variable, common_total)
+OnlyK_total
+
+# For women
+OnlyK_female <- setdiff(krusk_female_sig$variable, common_female)
+OnlyK_female
+
+#For men
+OnlyK_male <- setdiff(krusk_male_sig$variable, common_male)
+OnlyK_male
+```
+
+### Export the "OnlyK" files
+```{r}
+# Create file
+dir.create("R_files", showWarnings = FALSE)
+
+# Save as CSV
+write.csv(data.frame(variable = OnlyK_total),   "R_files/OnlyK_total.csv",   row.names = FALSE)
+write.csv(data.frame(variable = OnlyK_female), "R_files/OnlyK_female.csv", row.names = FALSE)
+write.csv(data.frame(variable = OnlyK_male),   "R_files/OnlyK_male.csv",   row.names = FALSE)
+```
+
+
+## Identify shared and unique variables between sex
+
+```{r}
+# Identify shared and unique variables
+shared_vars <- intersect(OnlyK_female, OnlyK_male)
+unique_women <- setdiff(OnlyK_female, shared_vars) # That are doubly significant for women but not for both sexes
+unique_men <- setdiff(OnlyK_male, shared_vars) # That are doubly significant for men but not for both sexes
+
+# Variables to process
+vars_to_plot <- c(shared_vars, unique_women, unique_men)
+
+write.csv(data.frame(variable = vars_to_plot), "R_files/vars_to_plot.csv", row.names = FALSE)
+```
+
+
+## Other ways to graph the relationship between Kruskal-Wallis and Linear Fitting
+### Comparison of both metrics in the same plot with two y-axes
+
+```{r}
+# Make sure there is no NA or Inf in the, p.adj or abs_normalized_slope (they shouldn't be, but just in case)
+combined_data_all_ordered <- combined_data_all %>%
+  filter(!is.na(p.adj), p.adj > 0, !is.na(abs_normalized_slope)) %>%
+  mutate(
+    log10_padj = -log10(p.adj),
+    abs_normalized_slope_1000 = 1000 * abs_normalized_slope
+  ) %>%
+  arrange(p.adj)
+
+# Verify that there are no problematic values
+if (nrow(combined_data_all_ordered) == 0) {
+  stop("No hay datos válidos después de filtrar NA o p.adj <= 0")
+}
+
+# See actual range
+range_abs <- range(combined_data_all_ordered$abs_normalized_slope_1000, na.rm = TRUE)
+cat("Rango de abs_normalized_slope_1000:", range_abs, "\n")
+
+# Calculate the scale factor between the two axes
+scale_factor <- max(combined_data_all_ordered$log10_padj) / max(combined_data_all_ordered$abs_normalized_slope_1000)
+
+# Graph with explicit transformation in sec_axis
+p <- ggplot(combined_data_all_ordered, aes(x = variable)) +
+  geom_line(aes(y = log10_padj, color = "Significance (-log10(p.adj))", group = 1), linewidth = 1) +
+  geom_line(aes(y = abs_normalized_slope_1000 * scale_factor, color = "Magnitude (abs_slope ×1000)", group = 1), linewidth = 1) +
+  labs(
+    title = "Comparison of Significance and Magnitude of Change by Variable",
+    x = "Variable (ordered by ascendent p.adj)",
+    y = "Significance (-log10(p.adj))",
+    color = "Metrics"
+  ) +
+  scale_color_manual(values = c("Significance (-log10(p.adj))" = "blue", "Magnitude (abs_slope ×1000)" = "red")) +
+  scale_y_continuous(
+    name = "Significance (-log10(p.adj))",
+    sec.axis = sec_axis(
+      ~ . / scale_factor,
+      name = "abs_normalized_slope ×1000",
+      breaks = seq(0, ceiling(max(combined_data_all_ordered$abs_normalized_slope_1000)/10)*10, by = 10)
+    )
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    legend.position = "top"
+  )
+
+print(p)
+
+# Save
+ggsave("output/comparacion_significancia_magnitud.png", plot = p, width = 12, height = 6, dpi = 300)
+
+```
+
+### Comparison scatter plot between both metrics
+
+```{r}
+# 'variable' is the column with the variable names in combined_data_all
+combined_data_all <- combined_data_all %>%
+  mutate(log10_padj = -log10(p.adj)) %>% # new column
+  filter(log10_padj <= 40) %>% # filter using the new column
+  arrange(p.adj)
+
+# Scatter graph with labels centered on the points
+p <- ggplot(combined_data_all_ordered, aes(x = log10_padj, y = abs_normalized_slope)) +
+  geom_point(aes(size = 2, color = abs_normalized_slope), alpha = 0.6) +  # Dots
+  geom_text(aes(label = variable), size = 2, color = "black", vjust = 0.5, hjust = 0.5) +  # Labels centered "within" the dots
+  labs(
+    title = "Relationship between Kruskal-Wallis and Linear Fitting",
+    x = "-log10(p.adj) (Kruskal-Wallis)",
+    y = "abs_normalized_slope (Linear fitting)",
+  ) +
+  scale_color_gradient(low = "lightblue", high = "darkblue") +
+  scale_x_continuous(limits = c(0, 40)) + # Maximum limit = 40
+  theme_minimal(base_size = 12)
+
+print(p)
+```
+
+
